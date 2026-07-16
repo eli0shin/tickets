@@ -50,7 +50,7 @@ async function readSkillSource(): Promise<{
   workflow: string;
   source: string;
 }> {
-  const source = await readFile(assetPath, 'utf8');
+  const source = (await readFile(assetPath, 'utf8')).replaceAll('\r\n', '\n');
   const match =
     /^---\n(?<frontMatter>[\s\S]*?)\n---\n\n(?<workflow>[\s\S]+)$/.exec(source);
 
