@@ -5,7 +5,6 @@ import {
   readFile,
   readdir,
   rm,
-  utimes,
   writeFile,
 } from 'node:fs/promises';
 import { basename, join } from 'node:path';
@@ -834,18 +833,14 @@ describe('tracker resource creation', () => {
     });
   });
 
-  test('recovers a stale ticket creation lock after an interrupted process', async () => {
+  test('creates no hidden ticket allocation state', async () => {
     const workspaceRoot = await temporaryWorkspace();
     const tracker = createTracker(workspaceRoot);
     await tracker.createProject('alpha-project');
     const projectPath = join(workspaceRoot, 'alpha-project');
-    const lockPath = join(projectPath, '.ticket-creation-lock');
-    await mkdir(lockPath);
-    const staleTime = new Date(Date.now() - 60_000);
-    await utimes(lockPath, staleTime, staleTime);
 
     const outcome = await tracker.createTicket('alpha-project', {
-      description: 'after-interruption',
+      description: 'without-hidden-state',
     });
     expect(outcome.ok).toBe(true);
     expect((await readdir(projectPath)).toSorted()).toEqual([
@@ -854,11 +849,6 @@ describe('tracker resource creation', () => {
       'project.md',
       'todo',
     ]);
-    expect(
-      (await tracker.discoverTickets('alpha-project', 'todo')).entries.map(
-        ({ id }) => id
-      )
-    ).toEqual([1n]);
   });
 
   test('requires a valid declared default status even with an override', async () => {

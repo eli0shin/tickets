@@ -1,6 +1,5 @@
 import { mkdir, rmdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import { lock as acquireFileLock } from 'proper-lockfile';
 import type { DocumentDiagnostic, Outcome } from './documents.ts';
 import { readTrackerDocument, writeNewTrackerDocument } from './documents.ts';
 import type { Project, Status, Ticket } from './discovery.ts';
@@ -141,50 +140,7 @@ export async function createTicket(
   if (!projectValidation.ok) return projectValidation;
   const selectedStatus = input.status ?? projectValidation.value;
 
-  const lock = await acquireCreationLock(project.path);
-  if (!lock.ok) return lock;
-
-  return createTicketWithLockHeld(project, selectedStatus, input, lock.value);
-}
-
-type CreationLock = {
-  readonly path: string;
-  readonly release: () => Promise<void>;
-  readonly compromisedError: () => Error | undefined;
-};
-
-async function createTicketWithLockHeld(
-  project: Project,
-  selectedStatus: string,
-  input: CreateTicketInput,
-  lock: CreationLock
-): Promise<Outcome<Ticket>> {
-  return createTicketWhileLocked(project, selectedStatus, input).then(
-    async (result) => {
-      const release = await releaseCreationLock(lock);
-      if (result.ok) return result;
-      return release.ok ? result : release;
-    },
-    async (error: unknown) => {
-      const release = await releaseCreationLock(lock);
-      if (!release.ok) return release;
-      throw error;
-    }
-  );
-}
-
-async function releaseCreationLock(
-  lock: CreationLock
-): Promise<Outcome<undefined>> {
-  const compromised = lock.compromisedError();
-  try {
-    await lock.release();
-    return compromised === undefined
-      ? { ok: true, value: undefined }
-      : filesystemFailure(lock.path, compromised);
-  } catch (error) {
-    return filesystemFailure(lock.path, compromised ?? error);
-  }
+  return createAllocatedTicket(project, selectedStatus, input);
 }
 
 async function validateProject(
@@ -213,58 +169,7 @@ async function validateProject(
   return { ok: true, value: defaultStatus };
 }
 
-const LOCK_STALE_MILLISECONDS = 30_000;
-const LOCK_RETRY_MILLISECONDS = 100;
-const LOCK_RETRIES = LOCK_STALE_MILLISECONDS / LOCK_RETRY_MILLISECONDS;
-
-async function acquireCreationLock(
-  projectPath: string
-): Promise<Outcome<CreationLock>> {
-  return acquireOwnedLock(
-    projectPath,
-    join(projectPath, '.ticket-creation-lock'),
-    'Another ticket creation is already in progress'
-  );
-}
-
-async function acquireOwnedLock(
-  lockTarget: string,
-  lockPath: string,
-  contentionMessage: string
-): Promise<Outcome<CreationLock>> {
-  let compromised: Error | undefined;
-  try {
-    const release = await acquireFileLock(lockTarget, {
-      lockfilePath: lockPath,
-      realpath: false,
-      stale: LOCK_STALE_MILLISECONDS,
-      update: 1_000,
-      retries: {
-        retries: LOCK_RETRIES,
-        factor: 1,
-        minTimeout: LOCK_RETRY_MILLISECONDS,
-        maxTimeout: LOCK_RETRY_MILLISECONDS,
-      },
-      onCompromised: (error) => {
-        compromised = error;
-      },
-    });
-    return {
-      ok: true,
-      value: {
-        path: lockPath,
-        release,
-        compromisedError: () => compromised,
-      },
-    };
-  } catch (error) {
-    return hasErrorCode(error, 'ELOCKED')
-      ? failure(lockPath, 'resource-exists', contentionMessage)
-      : filesystemFailure(lockPath, error);
-  }
-}
-
-async function createTicketWhileLocked(
+async function createAllocatedTicket(
   project: Project,
   selectedStatus: string,
   input: CreateTicketInput
