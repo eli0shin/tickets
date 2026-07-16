@@ -1,11 +1,11 @@
 import { lstat, mkdir, rename as renameFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
-import type {
-  DocumentDiagnostic,
-  Outcome,
-  TrackerDocument,
+import type { DocumentDiagnostic, Outcome } from './documents.ts';
+import {
+  readTrackerDocument,
+  updateTrackerMetadata,
+  writeTrackerDocument,
 } from './documents.ts';
-import { readTrackerDocument, writeTrackerDocument } from './documents.ts';
 import type { Project, Status, Ticket } from './discovery.ts';
 import {
   discoverProjects,
@@ -324,11 +324,11 @@ async function updateReferences(
 ): Promise<Outcome<undefined>> {
   const document = await readTrackerDocument(ticket.path, 'ticket');
   if (!document.ok) return document;
-  const metadata = { ...document.value.metadata };
+  const metadata = document.value.metadata;
   const blockers = referenceArray(ticket, metadata['Blocked-By'], 'Blocked-By');
   if (!blockers.ok) return blockers;
 
-  let changed = false;
+  const updates = new Map<string, unknown>();
   if (change.kind === 'rename') {
     const parent = optionalReference(ticket, metadata.Parent, 'Parent');
     if (!parent.ok) return parent;
@@ -337,15 +337,14 @@ async function updateReferences(
         ? null
         : rewriteReference(parent.value, ticket.status.project.name, change);
     if (rewrittenParent !== parent.value) {
-      metadata.Parent = rewrittenParent;
-      changed = true;
+      updates.set('Parent', rewrittenParent);
     }
+
     const rewrittenBlockers = blockers.value.map((reference) =>
       rewriteReference(reference, ticket.status.project.name, change)
     );
     if (!sameReferences(blockers.value, rewrittenBlockers)) {
-      metadata['Blocked-By'] = rewrittenBlockers;
-      changed = true;
+      updates.set('Blocked-By', rewrittenBlockers);
     }
   } else {
     const retained = blockers.value.filter(
@@ -357,14 +356,17 @@ async function updateReferences(
         )
     );
     if (!sameReferences(blockers.value, retained)) {
-      metadata['Blocked-By'] = retained;
-      changed = true;
+      updates.set('Blocked-By', retained);
     }
   }
 
-  if (!changed) return { ok: true, value: undefined };
-  const rewritten = { ...document.value, metadata } satisfies TrackerDocument;
-  return writeTrackerDocument(ticket.path, rewritten);
+  if (updates.size === 0) {
+    return { ok: true, value: undefined };
+  }
+  const rewritten = updateTrackerMetadata(ticket.path, document.value, updates);
+  return rewritten.ok
+    ? writeTrackerDocument(ticket.path, rewritten.value)
+    : rewritten;
 }
 
 function rewriteReference(

@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import {
   Document,
+  isMap,
   isScalar,
   parseDocument,
   visit,
@@ -17,6 +18,8 @@ export type TrackerDocument = {
 };
 
 export type DocumentKind = 'project' | 'ticket';
+
+const parsedDocuments = new WeakMap<TrackerDocument, Document>();
 
 export type DocumentDiagnosticCode =
   | 'duplicate-project-key'
@@ -116,17 +119,6 @@ export function parseTrackerDocument(
       },
     };
   }
-  if (!hasOnlySupportedTags(document)) {
-    return {
-      ok: false,
-      diagnostic: {
-        path,
-        code: malformedCode(kind),
-        message: 'YAML front matter contains an unsupported tag',
-      },
-    };
-  }
-
   const conversion = convertToMetadata(
     document.toJS.bind(document),
     path,
@@ -146,24 +138,12 @@ export function parseTrackerDocument(
       },
     };
   }
-  if (!isSupportedValue(metadata, new WeakSet())) {
-    return {
-      ok: false,
-      diagnostic: {
-        path,
-        code: malformedCode(kind),
-        message: 'YAML front matter contains an unsupported value',
-      },
-    };
-  }
-
-  return {
-    ok: true,
-    value: {
-      metadata,
-      body: remainder.slice(closing.index + closing[0].length),
-    },
-  };
+  const trackerDocument = {
+    metadata,
+    body: remainder.slice(closing.index + closing[0].length),
+  } satisfies TrackerDocument;
+  parsedDocuments.set(trackerDocument, document);
+  return { ok: true, value: trackerDocument };
 }
 
 export async function readTrackerDocument(
@@ -175,6 +155,29 @@ export async function readTrackerDocument(
     return parseTrackerDocument(path, source, kind);
   } catch (error) {
     return filesystemFailure(path, error);
+  }
+}
+
+export function updateTrackerMetadata(
+  path: string,
+  document: TrackerDocument,
+  updates: ReadonlyMap<string, unknown>
+): Outcome<TrackerDocument> {
+  const yamlDocument = parsedDocuments.get(document);
+  if (yamlDocument === undefined) {
+    return serializationFailure(path, 'Parsed YAML document is unavailable');
+  }
+
+  try {
+    for (const [key, value] of updates) yamlDocument.set(key, value);
+    const updated = {
+      metadata: { ...document.metadata, ...Object.fromEntries(updates) },
+      body: document.body,
+    } satisfies TrackerDocument;
+    parsedDocuments.set(updated, yamlDocument);
+    return { ok: true, value: updated };
+  } catch (error) {
+    return serializationFailure(path, errorMessage(error));
   }
 }
 
@@ -303,87 +306,13 @@ function isMetadata(value: unknown): value is Record<string, unknown> {
 function hasOnlyStringKeys(
   document: ReturnType<typeof parseDocument>
 ): boolean {
-  let valid = true;
-  visit(document, {
-    Pair: (_key, pair) => {
-      if (!isScalar(pair.key) || typeof pair.key.value !== 'string') {
-        valid = false;
-        return visit.BREAK;
-      }
-    },
-  });
-  return valid;
-}
-
-const SUPPORTED_TAGS = new Set([
-  'tag:yaml.org,2002:bool',
-  'tag:yaml.org,2002:float',
-  'tag:yaml.org,2002:int',
-  'tag:yaml.org,2002:map',
-  'tag:yaml.org,2002:null',
-  'tag:yaml.org,2002:seq',
-  'tag:yaml.org,2002:str',
-]);
-
-function hasOnlySupportedTags(
-  document: ReturnType<typeof parseDocument>
-): boolean {
-  let valid = true;
-  visit(document, {
-    Node: (_key, node) => {
-      if (
-        'tag' in node &&
-        node.tag !== undefined &&
-        !SUPPORTED_TAGS.has(node.tag)
-      ) {
-        valid = false;
-        return visit.BREAK;
-      }
-    },
-  });
-  return valid;
-}
-
-function isSupportedValue(value: unknown, ancestors: WeakSet<object>): boolean {
-  if (
-    value === null ||
-    typeof value === 'string' ||
-    typeof value === 'boolean' ||
-    typeof value === 'bigint' ||
-    typeof value === 'number'
-  ) {
-    return true;
-  }
-  if (typeof value !== 'object') return false;
-  if (ancestors.has(value)) return false;
-
-  const array = Array.isArray(value);
-  if (!array && Object.getPrototypeOf(value) !== Object.prototype) return false;
-
-  const keys = Reflect.ownKeys(value);
-  if (
-    array &&
-    (keys.length !== value.length + 1 ||
-      keys.some((key, index) =>
-        index < value.length ? key !== String(index) : key !== 'length'
-      ))
-  ) {
-    return false;
-  }
-
-  ancestors.add(value);
-  const valid = keys.every((key) => {
-    if (key === 'length' && array) return true;
-    if (typeof key !== 'string') return false;
-    const descriptor = Object.getOwnPropertyDescriptor(value, key);
-    return (
-      descriptor?.enumerable === true &&
-      'value' in descriptor &&
-      isSupportedValue(descriptor.value, ancestors)
-    );
-  });
-  ancestors.delete(value);
-  return valid;
+  return (
+    document.contents === null ||
+    !isMap(document.contents) ||
+    document.contents.items.every(
+      (pair) => isScalar(pair.key) && typeof pair.key.value === 'string'
+    )
+  );
 }
 
 function convertToMetadata(
@@ -403,27 +332,20 @@ function serializeDocument(
   document: TrackerDocument
 ): Outcome<string> {
   try {
-    if (
-      Object.getPrototypeOf(document.metadata) !== Object.prototype ||
-      !isSupportedValue(document.metadata, new WeakSet())
-    ) {
-      return serializationFailure(
-        path,
-        'YAML front matter contains an unsupported value'
-      );
+    const parsedDocument = parsedDocuments.get(document);
+    const yamlDocument = parsedDocument ?? new Document(document.metadata);
+    if (parsedDocument === undefined) {
+      visit(yamlDocument, {
+        Scalar: (_key, scalar) => {
+          if (
+            typeof scalar.value === 'number' &&
+            Number.isInteger(scalar.value)
+          ) {
+            scalar.minFractionDigits = 1;
+          }
+        },
+      });
     }
-
-    const yamlDocument = new Document(document.metadata);
-    visit(yamlDocument, {
-      Scalar: (_key, scalar) => {
-        if (
-          typeof scalar.value === 'number' &&
-          Number.isInteger(scalar.value)
-        ) {
-          scalar.minFractionDigits = 1;
-        }
-      },
-    });
     const yaml = yamlDocument.toString({ lineWidth: 0, nullStr: '' });
     const body = document.body.replaceAll('\r\n', '\n').replaceAll('\r', '\n');
     return { ok: true, value: `---\n${yaml}---\n${body}` };
