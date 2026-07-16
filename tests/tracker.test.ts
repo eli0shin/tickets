@@ -833,22 +833,28 @@ describe('tracker resource creation', () => {
     });
   });
 
-  test('creates no hidden ticket allocation state', async () => {
+  test('ignores the former creation lock path without changing it', async () => {
     const workspaceRoot = await temporaryWorkspace();
     const tracker = createTracker(workspaceRoot);
     await tracker.createProject('alpha-project');
     const projectPath = join(workspaceRoot, 'alpha-project');
+    const formerLockPath = join(projectPath, '.ticket-creation-lock');
+    const markerPath = join(formerLockPath, 'keep.txt');
+    await mkdir(formerLockPath);
+    await writeFile(markerPath, 'keep');
 
     const outcome = await tracker.createTicket('alpha-project', {
       description: 'without-hidden-state',
     });
     expect(outcome.ok).toBe(true);
     expect((await readdir(projectPath)).toSorted()).toEqual([
+      '.ticket-creation-lock',
       'done',
       'in-progress',
       'project.md',
       'todo',
     ]);
+    expect(await readFile(markerPath, 'utf8')).toBe('keep');
   });
 
   test('requires a valid declared default status even with an override', async () => {
