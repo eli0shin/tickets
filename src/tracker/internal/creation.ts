@@ -1,4 +1,5 @@
-import { mkdir, rmdir, stat } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { DocumentDiagnostic, Outcome } from './documents.ts';
 import { readTrackerDocument, writeNewTrackerDocument } from './documents.ts';
@@ -120,22 +121,22 @@ export async function createTicket(
   const lock = await acquireCreationLock(lockPath);
   if (!lock.ok) return lock;
 
-  return createTicketWithLockHeld(project, selectedStatus, input, lockPath);
+  return createTicketWithLockHeld(project, selectedStatus, input, lock.value);
 }
 
 async function createTicketWithLockHeld(
   project: Project,
   selectedStatus: string,
   input: CreateTicketInput,
-  lockPath: string
+  lock: CreationLock
 ): Promise<Outcome<Ticket>> {
   return createTicketWhileLocked(project, selectedStatus, input).then(
     async (result) => {
-      const release = await releaseCreationLock(lockPath);
+      const release = await releaseCreationLock(lock);
       return release.ok ? result : release;
     },
     async (error: unknown) => {
-      const release = await releaseCreationLock(lockPath);
+      const release = await releaseCreationLock(lock);
       if (!release.ok) return release;
       throw error;
     }
@@ -143,13 +144,21 @@ async function createTicketWithLockHeld(
 }
 
 async function releaseCreationLock(
-  lockPath: string
+  lock: CreationLock
 ): Promise<Outcome<undefined>> {
   try {
-    await rmdir(lockPath);
+    const currentOwner = await readCreationLockOwner(lock.ownerPath);
+    if (currentOwner?.token !== lock.token) {
+      return failure(
+        lock.path,
+        'resource-exists',
+        'Ticket creation lock ownership changed unexpectedly'
+      );
+    }
+    await rm(lock.path, { recursive: true });
     return { ok: true, value: undefined };
   } catch (error) {
-    return filesystemFailure(lockPath, error);
+    return filesystemFailure(lock.path, error);
   }
 }
 
@@ -180,43 +189,117 @@ async function validateProject(
 }
 
 const CREATION_LOCK_STALE_AFTER_MS = 30_000;
+const CREATION_LOCK_OWNER = 'owner.json';
+
+type CreationLock = {
+  readonly path: string;
+  readonly ownerPath: string;
+  readonly token: string;
+  readonly pid: number;
+};
 
 async function acquireCreationLock(
   lockPath: string
-): Promise<Outcome<undefined>> {
+): Promise<Outcome<CreationLock>> {
+  const lock = {
+    path: lockPath,
+    ownerPath: join(lockPath, CREATION_LOCK_OWNER),
+    token: randomUUID(),
+    pid: process.pid,
+  } satisfies CreationLock;
+
   for (let attempt = 0; attempt < 50; attempt += 1) {
     try {
-      await mkdir(lockPath);
-      return { ok: true, value: undefined };
+      await mkdir(lock.path);
+      await writeFile(
+        lock.ownerPath,
+        `${JSON.stringify({ token: lock.token, pid: lock.pid })}\n`,
+        { encoding: 'utf8', flag: 'wx' }
+      );
+      return { ok: true, value: lock };
     } catch (error) {
       if (!hasErrorCode(error, 'EEXIST')) {
-        return filesystemFailure(lockPath, error);
+        await removeIncompleteCreationLock(lock);
+        return filesystemFailure(lock.path, error);
       }
-      const recovery = await removeStaleCreationLock(lockPath);
+      const recovery = await removeStaleCreationLock(lock.path);
       if (!recovery.ok) return recovery;
       await Bun.sleep(10);
     }
   }
   return failure(
-    lockPath,
+    lock.path,
     'resource-exists',
     'Another ticket creation is already in progress'
   );
+}
+
+async function removeIncompleteCreationLock(lock: CreationLock): Promise<void> {
+  try {
+    const owner = await readCreationLockOwner(lock.ownerPath);
+    if (owner === null || owner.token === lock.token) {
+      await rm(lock.path, { recursive: true });
+    }
+  } catch {
+    // Preserve the original acquisition failure.
+  }
 }
 
 async function removeStaleCreationLock(
   lockPath: string
 ): Promise<Outcome<undefined>> {
   try {
-    const lock = await stat(lockPath);
-    if (Date.now() - lock.mtimeMs <= CREATION_LOCK_STALE_AFTER_MS) {
+    const ownerPath = join(lockPath, CREATION_LOCK_OWNER);
+    const owner = await readCreationLockOwner(ownerPath);
+    if (owner !== null && processIsRunning(owner.pid)) {
       return { ok: true, value: undefined };
     }
-    await rmdir(lockPath);
+    if (owner === null) {
+      const lock = await stat(lockPath);
+      if (Date.now() - lock.mtimeMs <= CREATION_LOCK_STALE_AFTER_MS) {
+        return { ok: true, value: undefined };
+      }
+    }
+    await rm(lockPath, { recursive: true });
     return { ok: true, value: undefined };
   } catch (error) {
     if (hasErrorCode(error, 'ENOENT')) return { ok: true, value: undefined };
     return filesystemFailure(lockPath, error);
+  }
+}
+
+async function readCreationLockOwner(
+  ownerPath: string
+): Promise<{ readonly token: string; readonly pid: number } | null> {
+  try {
+    const value: unknown = JSON.parse(await readFile(ownerPath, 'utf8'));
+    if (
+      value !== null &&
+      typeof value === 'object' &&
+      'token' in value &&
+      typeof value.token === 'string' &&
+      'pid' in value &&
+      typeof value.pid === 'number' &&
+      Number.isSafeInteger(value.pid) &&
+      value.pid > 0
+    ) {
+      return { token: value.token, pid: value.pid };
+    }
+    return null;
+  } catch (error) {
+    if (hasErrorCode(error, 'ENOENT') || error instanceof SyntaxError) {
+      return null;
+    }
+    throw error;
+  }
+}
+
+function processIsRunning(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return !hasErrorCode(error, 'ESRCH');
   }
 }
 
