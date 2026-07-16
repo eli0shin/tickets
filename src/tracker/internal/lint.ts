@@ -1,5 +1,5 @@
 import type { Dirent } from 'node:fs';
-import { lstat, readdir } from 'node:fs/promises';
+import { readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { normalizeRemote } from '../../git.ts';
 import type { DocumentDiagnostic } from './documents.ts';
@@ -416,7 +416,7 @@ async function projectsWithRepository(
       continue;
     const path = join(workspaceRoot, project.name, 'project.md');
     try {
-      if (!(await lstat(path)).isFile()) continue;
+      if (!(await stat(path)).isFile()) continue;
     } catch (error) {
       if (isMissingFileError(error)) continue;
       return filesystemFailure(path, error);

@@ -352,6 +352,38 @@ describe('tracker project lint', () => {
     expect(result).toEqual({ ok: true, violations: [] });
   });
 
+  test('detects a duplicate repository in symlinked peer metadata', async () => {
+    const workspaceRoot = await temporaryWorkspace();
+    const selectedPath = join(workspaceRoot, 'selected-project');
+    const peerPath = join(workspaceRoot, 'peer-project');
+    const peerMetadataPath = join(workspaceRoot, 'peer-metadata.md');
+    const metadata =
+      '---\nDefault-Status: todo\nGit-Repo: https://example.com/owner/repo.git\n---\n';
+    await Promise.all([
+      mkdir(join(selectedPath, 'todo'), { recursive: true }),
+      mkdir(join(peerPath, 'todo'), { recursive: true }),
+    ]);
+    await Promise.all([
+      writeFile(join(selectedPath, 'project.md'), metadata),
+      writeFile(peerMetadataPath, metadata),
+    ]);
+    await symlink('../peer-metadata.md', join(peerPath, 'project.md'));
+
+    const result =
+      await createTracker(workspaceRoot).lintProject('selected-project');
+
+    expect(result).toEqual({
+      ok: true,
+      violations: [
+        {
+          path: join(selectedPath, 'project.md'),
+          code: 'duplicate-git-repo',
+          message: 'Git-Repo is also declared by: peer-project',
+        },
+      ],
+    });
+  });
+
   test('returns invocation and filesystem failures outside the finding catalog', async () => {
     const workspaceRoot = await temporaryWorkspace();
     const tracker = createTracker(workspaceRoot);

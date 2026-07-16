@@ -9,6 +9,7 @@ import {
   selectProject,
   type ProjectRepository,
   type ProjectSelection,
+  type SelectProjectOptions,
 } from './git.ts';
 import {
   formatProjectSelectionFailure,
@@ -31,12 +32,6 @@ type CliDependencies = {
   confirmOverwrite?: ConfirmOverwrite;
   interactive?: boolean;
   cwd?: string;
-};
-
-type CliProjectSelectionOptions = {
-  cwd: string;
-  explicitProject?: string;
-  loadProjects: () => Promise<readonly ProjectRepository[]>;
 };
 
 export function createProgram({
@@ -125,7 +120,7 @@ export function createProgram({
 
 /** Compose CLI options and tracker-provided metadata with Git discovery. */
 export async function selectProjectForCli(
-  options: CliProjectSelectionOptions
+  options: SelectProjectOptions
 ): Promise<ProjectSelection> {
   return await selectProject(options);
 }
