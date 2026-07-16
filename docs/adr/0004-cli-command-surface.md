@@ -46,7 +46,7 @@ Tickets are the default namespace; there is no `tickets ticket ...` group.
 ```text
 tickets create <description>
   [--status <status>]
-  [--assign <assignee>]
+  [--assign <name>]
   [--tag <tag>...]
   [--parent <reference>]
   [--blocked-by <reference>...]
@@ -59,7 +59,7 @@ tickets list <status> [--json]
 tickets search
   [--status <status>]
   [--tag <tag>...]
-  [--assigned-to <assignee> | --unassigned]
+  [--assigned-to <name> | --unassigned]
   [--parent <reference>]
   [--blocked-by <reference>... | --unblocked]
   [--json]
@@ -71,7 +71,7 @@ Creation uses the project's `Default-Status` unless `--status` overrides it. Cre
 
 `done` is exact shorthand for moving to `done`; both routes invoke the same completion operation. Rename, move, and completion provide the cleanup behavior defined by the reference and integrity contract. There is no delete command, generic metadata editor, or post-creation command for assignment, tags, parents, or blockers; users edit those values directly in the ticket file.
 
-Search criteria use AND semantics across different criterion types. Repeated `--status` values search their union; other repeated criteria use AND semantics. Assignment value and `--unassigned` are mutually exclusive; blocker values and `--unblocked` are mutually exclusive. Query behavior and output follow the query and lint contract.
+Search criteria use AND semantics across different criterion types. Repeated `--status` values search their union; other repeated criteria use AND semantics. `--assign` accepts a non-empty human or agent name and preserves it exactly; `--assigned-to` matches that exact, case-sensitive value. Assignment value and `--unassigned` are mutually exclusive; blocker values and `--unblocked` are mutually exclusive. Query behavior and output follow the query and lint contract.
 
 ## Maintenance and integration
 

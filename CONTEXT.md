@@ -29,7 +29,7 @@ The project-designated status used for newly created tickets when no status is e
 _Avoid_: Initial status, starting status
 
 **Assignee**:
-The human or agent assigned to a ticket. For active work, assignment is an exclusive claim; completed tickets retain the assignee as part of their record. Assignee names are normalized but need not come from a registry.
+The human or agent assigned to a ticket. For active work, assignment is an exclusive claim; completed tickets retain the assignee as part of their record. Assignee names are free-form, non-empty strings preserved exactly and need not come from a registry.
 _Avoid_: Owner
 
 **Tag**:

@@ -24,6 +24,7 @@ import {
   type TrackerDocument,
 } from './internal/documents.ts';
 import {
+  isAssigneeName,
   isNormalizedName,
   isTicketReference,
   parseTicketName,
@@ -68,7 +69,7 @@ export type {
   MutationOutcome,
 };
 
-export { isNormalizedName, isTicketReference, parseTicketName };
+export { isAssigneeName, isNormalizedName, isTicketReference, parseTicketName };
 
 export type Tracker = {
   readonly workspaceRoot: string;
@@ -389,7 +390,6 @@ function validateSearchCriteria(
   const names: readonly [string, readonly string[] | undefined][] = [
     ['status', criteria.statuses],
     ['tag', criteria.tags],
-    ['assignee', criteria.assignedTo],
   ];
   for (const [kind, values] of names) {
     if (values === undefined) continue;
@@ -401,6 +401,15 @@ function validateSearchCriteria(
           message: `Invalid ${kind} name: ${value}`,
         };
       }
+    }
+  }
+  for (const assignee of criteria.assignedTo ?? []) {
+    if (!isAssigneeName(assignee)) {
+      return {
+        path: workspaceRoot,
+        code: 'invalid-name',
+        message: 'Assignee must be a non-empty string',
+      };
     }
   }
   const references = [

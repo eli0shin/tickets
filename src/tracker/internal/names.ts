@@ -23,6 +23,12 @@ export function normalizeTicketDescription(value: string): string | null {
   return normalized.length === 0 ? null : normalized;
 }
 
+export function isAssigneeName(value: string): boolean;
+export function isAssigneeName(value: unknown): value is string;
+export function isAssigneeName(value: unknown): boolean {
+  return typeof value === 'string' && value.length > 0;
+}
+
 export function parseTicketName(value: string): ParsedTicketName | null {
   const match = TICKET_NAME_PATTERN.exec(value);
   if (match === null) return null;

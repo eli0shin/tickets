@@ -58,7 +58,7 @@ Options:
   --status <status>         match tickets in this status (repeatable) (default:
                             [])
   --tag <tag>               match every tag (default: [])
-  --assigned-to <assignee>  match every assignee (default: [])
+  --assigned-to <name>      exactly match every assignee name (default: [])
   --unassigned              match unassigned tickets
   --parent <reference>      match every parent reference (default: [])
   --blocked-by <reference>  match every blocker reference (default: [])
@@ -535,6 +535,55 @@ Options:
       expect(await readdir(createCollisionPath)).toEqual([]);
     }
     expect(await Bun.file(sourcePath).exists()).toBe(false);
+  });
+
+  test('creates and exactly searches human assignee names', async () => {
+    const workspace = join(
+      await mkdtemp(join(temporaryDirectory, 'human-assignee-')),
+      'workspace'
+    );
+    const projectPath = join(workspace, 'alpha-project');
+    const todoPath = join(projectPath, 'todo');
+    const piPath = join(todoPath, '001-pi-ticket.md');
+    await mkdir(todoPath, { recursive: true });
+    await writeFile(
+      join(projectPath, 'project.md'),
+      '---\nDefault-Status: todo\n---\n'
+    );
+    await writeFile(piPath, '---\nAssigned-To: Pi\n---\n');
+    const base = [
+      ...getCommand(),
+      '--workspace',
+      workspace,
+      '--project',
+      'alpha-project',
+    ];
+
+    expect(await run([...base, 'search', '--assigned-to', 'Pi'])).toEqual({
+      stdout: `todo\t001-pi-ticket\t${piPath}\n`,
+      stderr: '',
+      exitCode: 0,
+    });
+    expect(await run([...base, 'search', '--assigned-to', 'pi'])).toEqual({
+      stdout: '',
+      stderr: '',
+      exitCode: 0,
+    });
+
+    const eliPath = join(todoPath, '002-eli-ticket.md');
+    expect(
+      await run([...base, 'create', 'eli-ticket', '--assign', 'Eli Oshinsky'])
+    ).toEqual({ stdout: `${eliPath}\n`, stderr: '', exitCode: 0 });
+    expect(await readFile(eliPath, 'utf8')).toContain(
+      'Assigned-To: Eli Oshinsky\n'
+    );
+    expect(
+      await run([...base, 'search', '--assigned-to', 'Eli Oshinsky'])
+    ).toEqual({
+      stdout: `todo\t002-eli-ticket\t${eliPath}\n`,
+      stderr: '',
+      exitCode: 0,
+    });
   });
 
   test('standard version options print only the package version', async () => {

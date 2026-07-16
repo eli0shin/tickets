@@ -1,6 +1,10 @@
 import type { Discovery, Ticket } from './discovery.ts';
 import type { DocumentDiagnostic, Metadata } from './documents.ts';
-import { isNormalizedName, isTicketReference } from './names.ts';
+import {
+  isAssigneeName,
+  isNormalizedName,
+  isTicketReference,
+} from './names.ts';
 
 export type TicketSummary = {
   readonly id: bigint;
@@ -98,10 +102,7 @@ function ticketMetadata(
   const parent = optionalString(metadata.Parent);
   const blockedBy = stringArray(metadata['Blocked-By'], isTicketReference);
 
-  if (
-    assignedTo !== null &&
-    (typeof assignedTo !== 'string' || !isNormalizedName(assignedTo))
-  ) {
+  if (assignedTo !== null && !isAssigneeName(assignedTo)) {
     return invalidMetadata(ticket, 'Assigned-To');
   }
   if (tags === null) {
