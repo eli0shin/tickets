@@ -1,6 +1,13 @@
 #!/usr/bin/env bun
 import { Command } from '@commander-js/extra-typings';
 import { homedir } from 'node:os';
+import {
+  getConfigPath,
+  getUpdateBehavior,
+  getUpdateCheckInterval,
+  readConfig,
+} from './config.ts';
+import { handleAutoUpdate } from './auto-update.ts';
 import { join, resolve } from 'node:path';
 import { version } from '../package.json';
 import {
@@ -23,6 +30,7 @@ import {
   type SearchInput,
 } from './commands/read.ts';
 import { installSkill } from './commands/skill.ts';
+import { updateCommand, type UpdateDependencies } from './commands/update.ts';
 import {
   selectProject,
   type ProjectRepository,
@@ -45,6 +53,8 @@ import {
   writeTicketMutation,
   writeTicketQueryResult,
   writeUnexpectedFailure,
+  writeUpdateMessage,
+  writeUpdateOutcome,
 } from './output.ts';
 import {
   createTracker,
@@ -54,7 +64,9 @@ import {
   type Tracker,
 } from './tracker/index.ts';
 import type { ConfirmOverwrite } from './skill.ts';
-import type { CommandOutcome } from './types.ts';
+import type { CommandOutcome, UpdateBehavior } from './types.ts';
+import { getTicketsExecutablePath } from './update.ts';
+import { runUpdaterWorker } from './updater-worker.ts';
 
 type GlobalOptions = {
   readonly workspace?: string;
@@ -81,8 +93,12 @@ type SelectProjectForCli = (
 type CliDependencies = {
   confirmOverwrite?: ConfirmOverwrite;
   selectProject?: SelectProjectForCli;
+  update?: UpdateDependencies;
   interactive?: boolean;
   cwd?: string;
+  executablePath?: string;
+  currentVersion?: string;
+  updateMessage?: string;
 };
 
 type SearchOptions = SearchInput & { readonly json?: boolean };
@@ -90,9 +106,14 @@ type SearchOptions = SearchInput & { readonly json?: boolean };
 export function createProgram({
   confirmOverwrite: confirm = confirmOverwrite,
   selectProject: select = selectProjectForCli,
+  update,
   interactive = Boolean(process.stdin.isTTY && process.stderr.isTTY),
   cwd = process.cwd(),
+  executablePath = getTicketsExecutablePath(),
+  currentVersion = version,
+  updateMessage,
 }: CliDependencies = {}): RootCommand {
+  let pendingUpdateMessage = updateMessage;
   const program = new Command()
     .configureOutput({ writeOut: writeStdout, writeErr: writeStderr })
     .exitOverride((error) => commanderExit(error.exitCode))
@@ -331,6 +352,19 @@ export function createProgram({
       );
     });
 
+  program
+    .command('update')
+    .description('update Tickets CLI to latest version')
+    .action(async () => {
+      const result = await updateCommand(
+        currentVersion,
+        executablePath,
+        update
+      );
+      writeUpdateOutcome(result);
+      if (result.outcome.ok) pendingUpdateMessage = undefined;
+    });
+
   const skill = program.command('skill').description('manage agent skills');
   skill
     .command('install')
@@ -360,7 +394,27 @@ export function createProgram({
       );
     });
 
+  program.hook('postAction', () => {
+    writeUpdateMessage(pendingUpdateMessage);
+  });
+
   return program;
+}
+
+type UpdateConfig = {
+  readonly behavior: UpdateBehavior;
+  readonly checkIntervalHours: number;
+};
+
+export async function getUpdateConfigFromFile(): Promise<UpdateConfig> {
+  const result = await readConfig(getConfigPath());
+  if (!result.success) {
+    return { behavior: 'auto', checkIntervalHours: 24 };
+  }
+  return {
+    behavior: getUpdateBehavior(result.data),
+    checkIntervalHours: getUpdateCheckInterval(result.data),
+  };
 }
 
 /** Compose CLI options and tracker-provided metadata with Git discovery. */
@@ -490,8 +544,28 @@ export async function run(
   argv: string[] = process.argv,
   dependencies: CliDependencies = {}
 ): Promise<void> {
+  const executablePath = getTicketsExecutablePath();
+  if (argv[2] === '--update-worker') {
+    if (executablePath !== undefined) await runUpdaterWorker();
+    return;
+  }
+
+  const updateConfig = await getUpdateConfigFromFile();
+  const autoUpdateResult =
+    executablePath === undefined
+      ? { message: undefined }
+      : await handleAutoUpdate(
+          version,
+          updateConfig.behavior,
+          updateConfig.checkIntervalHours
+        ).catch(() => ({ message: undefined }));
+
   try {
-    await createProgram(dependencies).parseAsync(argv);
+    await createProgram({
+      ...dependencies,
+      executablePath: dependencies.executablePath ?? executablePath,
+      updateMessage: dependencies.updateMessage ?? autoUpdateResult.message,
+    }).parseAsync(argv);
   } catch (error) {
     if (isExpectedCommanderExit(error)) {
       assignUsageExitCode(error.exitCode);

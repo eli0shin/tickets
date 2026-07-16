@@ -11,6 +11,8 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { version } from '../package.json';
 import { createProgram } from '../src/cli.ts';
+import type { UpdateDependencies } from '../src/commands/update.ts';
+import { isNewerVersion } from '../src/update.ts';
 import { createLintWorkspace } from './fixtures/lint-workspace.ts';
 
 const repositoryRoot = join(import.meta.dir, '..');
@@ -18,6 +20,7 @@ const assetPath = join(repositoryRoot, 'assets/tickets/SKILL.md');
 let temporaryDirectory: string;
 let executablePath: string;
 let interactiveExecutablePath: string;
+let updateExecutableProbePath: string;
 
 const helpOutput = `Usage: tickets [options] [command]
 
@@ -41,6 +44,7 @@ Commands:
                                     references
   move <reference> <status>         move a ticket to another status
   done <reference>                  complete a ticket
+  update                            update Tickets CLI to latest version
   skill                             manage agent skills
   lint [options]                    validate the selected project
   help [command]                    display help for command
@@ -173,7 +177,11 @@ async function run(
 ): Promise<ProcessResult> {
   const process = Bun.spawn(command, {
     cwd,
-    env: env ? { ...processEnv(), ...env } : undefined,
+    env: {
+      ...processEnv(),
+      XDG_CONFIG_HOME: join(temporaryDirectory, 'config-home'),
+      ...env,
+    },
     stdin: stdin === undefined ? undefined : new Blob([stdin]),
     stdout: 'pipe',
     stderr: 'pipe',
@@ -247,10 +255,18 @@ beforeAll(async () => {
   temporaryDirectory = await mkdtemp(join(tmpdir(), 'tickets-packaging-'));
   executablePath = join(temporaryDirectory, 'tickets');
   interactiveExecutablePath = join(temporaryDirectory, 'tickets-interactive');
+  updateExecutableProbePath = join(temporaryDirectory, 'update-executable');
+  const configDirectory = join(temporaryDirectory, 'config-home/tickets');
+  await mkdir(configDirectory, { recursive: true });
+  await writeFile(
+    join(configDirectory, 'config.json'),
+    JSON.stringify({ config: { updateBehavior: 'off' } })
+  );
 
   for (const [source, output] of [
     ['src/cli.ts', executablePath],
     ['tests/fixtures/interactive-cli.ts', interactiveExecutablePath],
+    ['tests/fixtures/update-executable.ts', updateExecutableProbePath],
   ]) {
     const result = await run([
       'bun',
@@ -278,6 +294,23 @@ test('output.ts is the sole source output boundary', async () => {
   ]);
 });
 
+test('compiled runtime resolves its own executable path', async () => {
+  expect(await run([updateExecutableProbePath])).toEqual({
+    stdout: `${updateExecutableProbePath}\n`,
+    stderr: '',
+    exitCode: 0,
+  });
+});
+
+test('source update refuses to replace the Bun runtime', async () => {
+  expect(await run(['bun', 'src/cli.ts', 'update'])).toEqual({
+    stdout: '',
+    stderr:
+      'Cannot update from a source invocation; use the compiled Tickets executable\n',
+    exitCode: 2,
+  });
+});
+
 describe.each([
   ['Bun entry point', () => ['bun', 'src/cli.ts']],
   ['native executable', () => [executablePath]],
@@ -289,6 +322,28 @@ describe.each([
       exitCode: 0,
     });
   }, 15_000);
+
+  test('update help exposes the explicit updater', async () => {
+    expect(await run([...getCommand(), 'update', '--help'])).toEqual({
+      stdout: `Usage: tickets update [options]
+
+update Tickets CLI to latest version
+
+Options:
+  -h, --help  display help for command
+`,
+      stderr: '',
+      exitCode: 0,
+    });
+  });
+
+  test('worker mode dispatches before normal CLI parsing', async () => {
+    expect(await run([...getCommand(), '--update-worker'])).toEqual({
+      stdout: '',
+      stderr: '',
+      exitCode: 0,
+    });
+  });
 
   test('standard version options print only the package version', async () => {
     for (const option of ['-V', '--version']) {
@@ -1507,4 +1562,107 @@ describe('ticket mutation commands', () => {
       exitCode: 2,
     });
   });
+});
+
+test('notify mode preserves JSON and raw stdout contracts', async () => {
+  const workspace = join(temporaryDirectory, 'notify-output-workspace');
+  const projectPath = join(workspace, 'alpha-project');
+  const ticketPath = join(projectPath, 'todo/001-original.md');
+  await mkdir(join(projectPath, 'todo'), { recursive: true });
+  await writeFile(
+    join(projectPath, 'project.md'),
+    '---\nDefault-Status: todo\n---\n'
+  );
+  await writeFile(ticketPath, ticketSource);
+
+  for (const [arguments_, stdout] of [
+    [
+      ['--workspace', workspace, 'project', 'list', '--json'],
+      `${JSON.stringify(
+        {
+          projects: [{ name: 'alpha-project', path: projectPath }],
+        },
+        null,
+        2
+      )}\n`,
+    ],
+    [
+      [
+        '--workspace',
+        workspace,
+        '--project',
+        'alpha-project',
+        'show',
+        '001-original',
+      ],
+      ticketSource,
+    ],
+  ] as const) {
+    expect(
+      await captureProcessOutput(async () => {
+        await createProgram({
+          updateMessage: 'Update available: v1.2.3',
+        }).parseAsync(['node', 'tickets', ...arguments_]);
+      })
+    ).toEqual({
+      stdout,
+      stderr: 'Update available: v1.2.3\n',
+      exitCode: undefined,
+    });
+  }
+});
+
+test('successful manual update suppresses a pending notification', async () => {
+  const update = {
+    fetchLatestVersion: async () => ({
+      success: true as const,
+      data: { version: '1.2.3', downloadUrl: 'unused' },
+    }),
+    isNewerVersion,
+    downloadBinary: async () => ({ success: true as const, data: 'unused' }),
+    replaceBinary: async () => ({ success: true as const, data: undefined }),
+  } satisfies UpdateDependencies;
+
+  expect(
+    await captureProcessOutput(async () => {
+      await createProgram({
+        currentVersion: '1.2.3',
+        executablePath: '/tmp/tickets',
+        update,
+        updateMessage: 'Update available: v1.2.3',
+      }).parseAsync(['node', 'tickets', 'update']);
+    })
+  ).toEqual({
+    stdout:
+      'Current version: 1.2.3\nChecking for updates...\nAlready on latest version (v1.2.3)\n',
+    stderr: '',
+    exitCode: undefined,
+  });
+});
+
+test('update uses the standard output and failure status boundary', async () => {
+  const update = {
+    fetchLatestVersion: async () => ({
+      success: false,
+      error: 'No releases found',
+    }),
+    isNewerVersion,
+    downloadBinary: async () => ({ success: true, data: 'unused' }),
+    replaceBinary: async () => ({ success: true, data: undefined }),
+  } satisfies UpdateDependencies;
+
+  expect(
+    await captureProcessOutput(async () => {
+      await createProgram({
+        currentVersion: '1.2.3',
+        executablePath: '/tmp/tickets',
+        update,
+      }).parseAsync(['node', 'tickets', 'update']);
+    })
+  ).toEqual({
+    stdout: 'Current version: 1.2.3\nChecking for updates...\n',
+    stderr: 'Error checking for updates: No releases found\n',
+    exitCode: 2,
+  });
+  process.exitCode = 0;
 });
