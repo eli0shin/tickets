@@ -2,6 +2,11 @@
 import { Command } from '@commander-js/extra-typings';
 import { CommanderError } from 'commander';
 import { version } from '../package.json';
+import {
+  selectProject,
+  type ProjectRepository,
+  type ProjectSelection,
+} from './git.ts';
 import { writeDiagnostic, writeSuccess } from './output.ts';
 import {
   confirmOverwrite,
@@ -12,6 +17,12 @@ import {
 type CliDependencies = {
   confirmOverwrite?: ConfirmOverwrite;
   interactive?: boolean;
+};
+
+type CliProjectSelectionOptions = {
+  cwd: string;
+  explicitProject?: string;
+  loadProjects: () => Promise<readonly ProjectRepository[]>;
 };
 
 export function createProgram({
@@ -54,6 +65,24 @@ export function createProgram({
     });
 
   return program;
+}
+
+/** Compose CLI options and tracker-provided metadata with Git discovery. */
+export async function selectProjectForCli(
+  options: CliProjectSelectionOptions
+): Promise<ProjectSelection> {
+  if (options.explicitProject !== undefined) {
+    return await selectProject({
+      cwd: options.cwd,
+      explicitProject: options.explicitProject,
+      projects: [],
+    });
+  }
+
+  return await selectProject({
+    cwd: options.cwd,
+    projects: await options.loadProjects(),
+  });
 }
 
 export async function run(argv: string[] = process.argv): Promise<void> {
