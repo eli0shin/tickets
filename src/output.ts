@@ -1,3 +1,4 @@
+import { createInterface } from 'node:readline/promises';
 import type { ProjectSelection } from './git.ts';
 import type {
   DocumentDiagnostic,
@@ -11,16 +12,42 @@ import type {
 type NamedResource = Pick<Project | Status, 'name' | 'path'>;
 type ProjectSelectionFailure = Extract<ProjectSelection, { ok: false }>;
 
-export function writeSuccess(value: string): void {
-  process.stdout.write(`${value}\n`);
-}
-
-export function writeRaw(value: string): void {
+export function writeStdout(value: string): void {
   process.stdout.write(value);
 }
 
+export function writeStderr(value: string): void {
+  process.stderr.write(value);
+}
+
+export function writeSuccess(value: string): void {
+  writeStdout(`${value}\n`);
+}
+
+export function writeRaw(value: string): void {
+  writeStdout(value);
+}
+
 export function writeDiagnostic(message: string): void {
-  process.stderr.write(`${message}\n`);
+  writeStderr(`${message}\n`);
+}
+
+export async function confirmOverwrite(
+  installedPath: string
+): Promise<boolean> {
+  const prompt = createInterface({
+    input: process.stdin,
+    output: process.stderr,
+  });
+
+  try {
+    const answer = await prompt.question(
+      `${installedPath} already exists. Overwrite? [y/N] `
+    );
+    return ['y', 'yes'].includes(answer.trim().toLowerCase());
+  } finally {
+    prompt.close();
+  }
 }
 
 export function formatProjectSelectionFailure(
@@ -48,15 +75,11 @@ export function writeLint(
   json: boolean
 ): void {
   if (json) {
-    process.stdout.write(
-      `${JSON.stringify({ project, violations }, null, 2)}\n`
-    );
+    writeStdout(`${JSON.stringify({ project, violations }, null, 2)}\n`);
     return;
   }
   for (const violation of violations) {
-    process.stdout.write(
-      `${violation.path}\t${violation.code}\t${violation.message}\n`
-    );
+    writeStdout(`${violation.path}\t${violation.code}\t${violation.message}\n`);
   }
 }
 
@@ -125,13 +148,11 @@ export function writeTicketQuery(result: QueryResult, json: boolean): void {
 
 function writeRecords(records: readonly (readonly string[])[]): void {
   if (records.length === 0) return;
-  process.stdout.write(
-    `${records.map((fields) => fields.join('\t')).join('\n')}\n`
-  );
+  writeStdout(`${records.map((fields) => fields.join('\t')).join('\n')}\n`);
 }
 
 function writeJson(value: unknown): void {
-  process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
+  writeStdout(`${JSON.stringify(value, null, 2)}\n`);
 }
 
 export function writeMutation(
