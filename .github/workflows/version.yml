@@ -1,0 +1,114 @@
+name: Version
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Configure Git
+        run: |
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git config --global user.name "github-actions[bot]"
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Build
+        run: bun run build
+
+      - name: Test
+        run: bun run test
+        env:
+          GIT_EDITOR: 'true'
+
+      - name: Create Release Pull Request or Publish
+        id: changesets
+        uses: changesets/action@v1
+        with:
+          version: bunx changeset version
+          publish: bunx changeset tag
+          title: 'chore: version packages'
+          createGithubReleases: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check if release needs binaries
+        id: check-release
+        run: |
+          VERSION="v$(jq -r .version package.json)"
+          if ! gh release view "$VERSION" &>/dev/null; then
+            echo "No release found for $VERSION"
+            echo "needs_binaries=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          ASSETS=$(gh release view "$VERSION" --json assets --jq '.assets[].name')
+          NEEDS_BINARIES=false
+          for artifact in \
+            tickets-linux-x64 \
+            tickets-linux-arm64 \
+            tickets-darwin-x64 \
+            tickets-darwin-arm64
+          do
+            if ! grep -Fxq "$artifact" <<< "$ASSETS"; then
+              echo "Release is missing $artifact"
+              NEEDS_BINARIES=true
+            fi
+          done
+
+          echo "needs_binaries=$NEEDS_BINARIES" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check out release commit
+        if: steps.check-release.outputs.needs_binaries == 'true'
+        run: git checkout --detach --force "refs/tags/${{ steps.check-release.outputs.version }}"
+
+      - name: Clean release dependencies
+        if: steps.check-release.outputs.needs_binaries == 'true'
+        run: rm -rf node_modules
+
+      - name: Install release dependencies
+        if: steps.check-release.outputs.needs_binaries == 'true'
+        run: bun install --frozen-lockfile
+
+      - name: Build linux-x64
+        if: steps.check-release.outputs.needs_binaries == 'true'
+        run: bun build src/cli.ts --compile --target=bun-linux-x64 --outfile tickets-linux-x64
+
+      - name: Build linux-arm64
+        if: steps.check-release.outputs.needs_binaries == 'true'
+        run: bun build src/cli.ts --compile --target=bun-linux-arm64 --outfile tickets-linux-arm64
+
+      - name: Build darwin-x64
+        if: steps.check-release.outputs.needs_binaries == 'true'
+        run: bun build src/cli.ts --compile --target=bun-darwin-x64 --outfile tickets-darwin-x64
+
+      - name: Build darwin-arm64
+        if: steps.check-release.outputs.needs_binaries == 'true'
+        run: bun build src/cli.ts --compile --target=bun-darwin-arm64 --outfile tickets-darwin-arm64
+
+      - name: Upload binaries to release
+        if: steps.check-release.outputs.needs_binaries == 'true'
+        run: |
+          gh release upload "${{ steps.check-release.outputs.version }}" \
+            tickets-linux-x64 \
+            tickets-linux-arm64 \
+            tickets-darwin-x64 \
+            tickets-darwin-arm64 \
+            --clobber
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
