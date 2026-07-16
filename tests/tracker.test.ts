@@ -3,8 +3,10 @@ import {
   mkdtemp,
   mkdir,
   readFile,
+  readdir,
   rm,
   symlink,
+  utimes,
   writeFile,
 } from 'node:fs/promises';
 import { basename, join } from 'node:path';
@@ -881,6 +883,28 @@ describe('tracker resource creation', () => {
       outcome.ok ? [outcome.value.id] : []
     );
     expect(ids.toSorted()).toEqual([1n, 2n]);
+  });
+
+  test('recovers a stale ticket creation lock after an interrupted process', async () => {
+    const workspaceRoot = await temporaryWorkspace();
+    const tracker = createTracker(workspaceRoot);
+    await tracker.createProject('alpha-project');
+    const projectPath = join(workspaceRoot, 'alpha-project');
+    const lockPath = join(projectPath, '.ticket-creation-lock');
+    await mkdir(lockPath);
+    const staleTime = new Date(Date.now() - 60_000);
+    await utimes(lockPath, staleTime, staleTime);
+
+    const outcome = await tracker.createTicket('alpha-project', {
+      description: 'after-interruption',
+    });
+    expect(outcome.ok).toBe(true);
+    expect((await readdir(projectPath)).toSorted()).toEqual([
+      'done',
+      'in-progress',
+      'project.md',
+      'todo',
+    ]);
   });
 
   test('requires a valid declared default status even with an override', async () => {

@@ -1,4 +1,4 @@
-import { mkdir, rmdir } from 'node:fs/promises';
+import { mkdir, rmdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { DocumentDiagnostic, Outcome } from './documents.ts';
 import { readTrackerDocument, writeNewTrackerDocument } from './documents.ts';
@@ -179,6 +179,8 @@ async function validateProject(
   return { ok: true, value: defaultStatus };
 }
 
+const CREATION_LOCK_STALE_AFTER_MS = 30_000;
+
 async function acquireCreationLock(
   lockPath: string
 ): Promise<Outcome<undefined>> {
@@ -187,8 +189,11 @@ async function acquireCreationLock(
       await mkdir(lockPath);
       return { ok: true, value: undefined };
     } catch (error) {
-      if (!hasErrorCode(error, 'EEXIST'))
+      if (!hasErrorCode(error, 'EEXIST')) {
         return filesystemFailure(lockPath, error);
+      }
+      const recovery = await removeStaleCreationLock(lockPath);
+      if (!recovery.ok) return recovery;
       await Bun.sleep(10);
     }
   }
@@ -197,6 +202,22 @@ async function acquireCreationLock(
     'resource-exists',
     'Another ticket creation is already in progress'
   );
+}
+
+async function removeStaleCreationLock(
+  lockPath: string
+): Promise<Outcome<undefined>> {
+  try {
+    const lock = await stat(lockPath);
+    if (Date.now() - lock.mtimeMs <= CREATION_LOCK_STALE_AFTER_MS) {
+      return { ok: true, value: undefined };
+    }
+    await rmdir(lockPath);
+    return { ok: true, value: undefined };
+  } catch (error) {
+    if (hasErrorCode(error, 'ENOENT')) return { ok: true, value: undefined };
+    return filesystemFailure(lockPath, error);
+  }
 }
 
 async function createTicketWhileLocked(
