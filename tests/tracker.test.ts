@@ -12,7 +12,6 @@ import {
 import { basename, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createLintWorkspace } from './fixtures/lint-workspace.ts';
-import { createTicket as createTicketInternal } from '../src/tracker/internal/creation.ts';
 import {
   createTracker,
   isNormalizedName,
@@ -23,6 +22,10 @@ import {
 } from '../src/tracker/index.ts';
 
 const temporaryDirectories: string[] = [];
+const temporaryProcesses: {
+  child: Bun.Subprocess;
+  stopped: boolean;
+}[] = [];
 
 async function temporaryWorkspace(): Promise<string> {
   const path = await mkdtemp(join(tmpdir(), 'tickets-tracker-'));
@@ -30,7 +33,26 @@ async function temporaryWorkspace(): Promise<string> {
   return path;
 }
 
+async function waitForDirectoryEntry(
+  path: string,
+  name: string
+): Promise<void> {
+  for (let attempt = 0; attempt < 10_000; attempt += 1) {
+    if ((await readdir(path)).includes(name)) return;
+    await Bun.sleep(1);
+  }
+  throw new Error(`Timed out waiting for ${name} in ${path}`);
+}
+
 afterEach(async () => {
+  const processes = temporaryProcesses.splice(0);
+  for (const processState of processes) {
+    if (processState.stopped) {
+      process.kill(processState.child.pid, 'SIGCONT');
+    }
+    if (processState.child.exitCode === null) processState.child.kill();
+  }
+  await Promise.allSettled(processes.map(({ child }) => child.exited));
   await Promise.all(
     temporaryDirectories
       .splice(0)
@@ -906,48 +928,105 @@ describe('tracker resource creation', () => {
     expect(ids.toSorted()).toEqual([1n, 2n]);
   });
 
-  test('checks lock compromise before publication and preserves published success', async () => {
+  test('queues high-contention ticket creation without lock failures', async () => {
     const workspaceRoot = await temporaryWorkspace();
     const tracker = createTracker(workspaceRoot);
-    await tracker.createProject('release-project');
+    await tracker.createProject('alpha-project');
 
-    const published = await createTicketInternal(
-      workspaceRoot,
-      'release-project',
-      { description: 'published-before-release-failure' },
-      async (projectPath) => ({
-        ok: true,
-        value: {
-          path: join(projectPath, '.test-lock'),
-          release: () => Promise.reject(new Error('release failed')),
-          compromisedError: () => undefined,
-        },
-      })
+    const outcomes = await Promise.all(
+      Array.from({ length: 100 }, (_, index) =>
+        tracker.createTicket('alpha-project', {
+          description: `concurrent-${index}`,
+        })
+      )
     );
-    expect(published.ok).toBe(true);
+    expect(outcomes.every(({ ok }) => ok)).toBe(true);
     expect(
-      await readdir(join(workspaceRoot, 'release-project', 'todo'))
-    ).toEqual(['001-published-before-release-failure.md']);
+      outcomes
+        .flatMap((outcome) => (outcome.ok ? [outcome.value.id] : []))
+        .toSorted((left, right) => (left < right ? -1 : 1))
+    ).toEqual(Array.from({ length: 100 }, (_, index) => BigInt(index + 1)));
+  }, 60_000);
 
-    await tracker.createProject('compromised-project');
-    const compromised = await createTicketInternal(
-      workspaceRoot,
-      'compromised-project',
-      { description: 'must-not-publish' },
-      async (projectPath) => ({
-        ok: true,
-        value: {
-          path: join(projectPath, '.test-lock'),
-          release: () => Promise.resolve().then(() => undefined),
-          compromisedError: () => new Error('lock compromised'),
-        },
-      })
+  test('keeps IDs unique when global lock ownership is lost before publication', async () => {
+    const workspaceRoot = await temporaryWorkspace();
+    const tracker = createTracker(workspaceRoot);
+    await tracker.createProject('alpha-project');
+    const projectPath = join(workspaceRoot, 'alpha-project');
+    const fixture = join(import.meta.dir, 'fixtures', 'create-ticket.ts');
+
+    const first = Bun.spawn(
+      [
+        'bun',
+        fixture,
+        workspaceRoot,
+        'alpha-project',
+        'first-after-lock-loss',
+        '50000',
+      ],
+      { stdout: 'pipe', stderr: 'pipe' }
     );
-    expect(compromised.ok).toBe(false);
+    const firstState = { child: first, stopped: false };
+    temporaryProcesses.push(firstState);
+    await waitForDirectoryEntry(projectPath, '.ticket-id-1-claim');
+    process.kill(first.pid, 'SIGSTOP');
+    firstState.stopped = true;
+    await Bun.sleep(10);
     expect(
-      await readdir(join(workspaceRoot, 'compromised-project', 'todo'))
+      (await tracker.discoverTickets('alpha-project', 'todo')).entries
     ).toEqual([]);
-  });
+    await rm(join(projectPath, '.ticket-creation-lock'), {
+      force: true,
+      recursive: true,
+    });
+    const second = Bun.spawn(
+      [
+        'bun',
+        fixture,
+        workspaceRoot,
+        'alpha-project',
+        'second-after-lock-loss',
+      ],
+      { stdout: 'pipe', stderr: 'pipe' }
+    );
+    temporaryProcesses.push({ child: second, stopped: false });
+    await waitForDirectoryEntry(projectPath, '.ticket-id-2-claim');
+    const [secondOutput, secondError, secondExit] = await Promise.all([
+      new Response(second.stdout).text(),
+      new Response(second.stderr).text(),
+      second.exited,
+    ]);
+    expect({ secondOutput, secondError, secondExit }).toEqual({
+      secondOutput: '2\n',
+      secondError: '',
+      secondExit: 0,
+    });
+
+    await Bun.sleep(1_500);
+    expect(
+      (await tracker.discoverTickets('alpha-project', 'todo')).entries.some(
+        ({ id }) => id === 1n
+      )
+    ).toBe(false);
+    process.kill(first.pid, 'SIGCONT');
+    firstState.stopped = false;
+
+    const [firstOutput, firstError, firstExit] = await Promise.all([
+      new Response(first.stdout).text(),
+      new Response(first.stderr).text(),
+      first.exited,
+    ]);
+    expect({ firstOutput, firstError, firstExit }).toEqual({
+      firstOutput: '1\n',
+      firstError: '',
+      firstExit: 0,
+    });
+    expect(
+      (await tracker.discoverTickets('alpha-project', 'todo')).entries.map(
+        ({ id }) => id
+      )
+    ).toEqual([1n, 2n]);
+  }, 60_000);
 
   test('recovers a stale ticket creation lock after an interrupted process', async () => {
     const workspaceRoot = await temporaryWorkspace();
@@ -964,6 +1043,30 @@ describe('tracker resource creation', () => {
     });
     expect(outcome.ok).toBe(true);
     expect((await readdir(projectPath)).toSorted()).toEqual([
+      '.ticket-id-1-claim',
+      'done',
+      'in-progress',
+      'project.md',
+      'todo',
+    ]);
+  });
+
+  test('never reuses an abandoned ticket ID claim', async () => {
+    const workspaceRoot = await temporaryWorkspace();
+    const tracker = createTracker(workspaceRoot);
+    await tracker.createProject('alpha-project');
+    const projectPath = join(workspaceRoot, 'alpha-project');
+    await writeFile(join(projectPath, '.ticket-id-1-claim'), '');
+
+    const outcome = await tracker.createTicket('alpha-project', {
+      description: 'after-abandoned-id-claim',
+    });
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) throw new Error(outcome.diagnostic.message);
+    expect(outcome.value.id).toBe(2n);
+    expect((await readdir(projectPath)).toSorted()).toEqual([
+      '.ticket-id-1-claim',
+      '.ticket-id-2-claim',
       'done',
       'in-progress',
       'project.md',

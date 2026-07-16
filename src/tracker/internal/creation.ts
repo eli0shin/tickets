@@ -1,4 +1,4 @@
-import { mkdir, rmdir } from 'node:fs/promises';
+import { mkdir, readdir, rmdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { lock as acquireFileLock } from 'proper-lockfile';
 import type { DocumentDiagnostic, Outcome } from './documents.ts';
@@ -119,10 +119,7 @@ export async function createStatus(
 export async function createTicket(
   workspaceRoot: string,
   projectName: string,
-  input: CreateTicketInput,
-  acquireLock: (
-    projectPath: string
-  ) => Promise<Outcome<CreationLock>> = acquireCreationLock
+  input: CreateTicketInput
 ): Promise<Outcome<Ticket>> {
   const validation = validateTicketInput(workspaceRoot, projectName, input);
   if (!validation.ok) return validation;
@@ -144,7 +141,7 @@ export async function createTicket(
   if (!projectValidation.ok) return projectValidation;
   const selectedStatus = input.status ?? projectValidation.value;
 
-  const lock = await acquireLock(project.path);
+  const lock = await acquireCreationLock(project.path);
   if (!lock.ok) return lock;
 
   return createTicketWithLockHeld(project, selectedStatus, input, lock.value);
@@ -162,7 +159,7 @@ async function createTicketWithLockHeld(
   input: CreateTicketInput,
   lock: CreationLock
 ): Promise<Outcome<Ticket>> {
-  return createTicketWhileLocked(project, selectedStatus, input, lock).then(
+  return createTicketWhileLocked(project, selectedStatus, input).then(
     async (result) => {
       const release = await releaseCreationLock(lock);
       if (result.ok) return result;
@@ -216,18 +213,38 @@ async function validateProject(
   return { ok: true, value: defaultStatus };
 }
 
+const LOCK_STALE_MILLISECONDS = 30_000;
+const LOCK_RETRY_MILLISECONDS = 100;
+const LOCK_RETRIES = LOCK_STALE_MILLISECONDS / LOCK_RETRY_MILLISECONDS;
+
 async function acquireCreationLock(
   projectPath: string
 ): Promise<Outcome<CreationLock>> {
-  const lockPath = join(projectPath, '.ticket-creation-lock');
+  return acquireOwnedLock(
+    projectPath,
+    join(projectPath, '.ticket-creation-lock'),
+    'Another ticket creation is already in progress'
+  );
+}
+
+async function acquireOwnedLock(
+  lockTarget: string,
+  lockPath: string,
+  contentionMessage: string
+): Promise<Outcome<CreationLock>> {
   let compromised: Error | undefined;
   try {
-    const release = await acquireFileLock(projectPath, {
+    const release = await acquireFileLock(lockTarget, {
       lockfilePath: lockPath,
       realpath: false,
-      stale: 30_000,
+      stale: LOCK_STALE_MILLISECONDS,
       update: 1_000,
-      retries: { retries: 50, factor: 1, minTimeout: 10, maxTimeout: 10 },
+      retries: {
+        retries: LOCK_RETRIES,
+        factor: 1,
+        minTimeout: LOCK_RETRY_MILLISECONDS,
+        maxTimeout: LOCK_RETRY_MILLISECONDS,
+      },
       onCompromised: (error) => {
         compromised = error;
       },
@@ -241,30 +258,74 @@ async function acquireCreationLock(
       },
     };
   } catch (error) {
-    if (hasErrorCode(error, 'ELOCKED')) {
-      return failure(
-        lockPath,
-        'resource-exists',
-        'Another ticket creation is already in progress'
-      );
-    }
-    return filesystemFailure(lockPath, error);
+    return hasErrorCode(error, 'ELOCKED')
+      ? failure(lockPath, 'resource-exists', contentionMessage)
+      : filesystemFailure(lockPath, error);
   }
 }
 
 async function createTicketWhileLocked(
   project: Project,
   selectedStatus: string,
-  input: CreateTicketInput,
-  lock: CreationLock
+  input: CreateTicketInput
 ): Promise<Outcome<Ticket>> {
+  let allocation;
+  let id: bigint;
+  for (;;) {
+    allocation = await discoverTicketAllocation(project, selectedStatus);
+    if (!allocation.ok) return allocation;
+    id = allocation.value.highestId + 1n;
+    const claim = await claimTicketId(project.path, id);
+    if (!claim.ok) return claim;
+    if (claim.value) break;
+  }
+
+  const name = `${id.toString().padStart(3, '0')}-${input.description}`;
+  const ticket = {
+    id,
+    name,
+    description: input.description,
+    path: join(allocation.value.status.path, `${name}.md`),
+    status: allocation.value.status,
+  } satisfies Ticket;
+  const write = await writeNewTrackerDocument(ticket.path, {
+    metadata: {
+      'Assigned-To': input.assignee ?? null,
+      Tags: [...(input.tags ?? [])],
+      Parent: input.parent ?? null,
+      'Blocked-By': [...(input.blockedBy ?? [])],
+    },
+    body: '',
+  });
+  return write.ok ? { ok: true, value: ticket } : write;
+}
+
+async function claimTicketId(
+  projectPath: string,
+  id: bigint
+): Promise<Outcome<boolean>> {
+  const claimPath = join(projectPath, `.ticket-id-${id}-claim`);
+  try {
+    await writeFile(claimPath, '', { flag: 'wx' });
+    return { ok: true, value: true };
+  } catch (error) {
+    return hasErrorCode(error, 'EEXIST')
+      ? { ok: true, value: false }
+      : filesystemFailure(claimPath, error);
+  }
+}
+
+async function discoverTicketAllocation(
+  project: Project,
+  selectedStatus: string
+): Promise<Outcome<{ readonly highestId: bigint; readonly status: Status }>> {
   const statuses = await discoverStatuses(project);
   const statusDiagnostic = statuses.diagnostics.at(0);
   if (statusDiagnostic !== undefined) {
     return { ok: false, diagnostic: statusDiagnostic };
   }
-  const status = statuses.entries.find(({ name }) => name === selectedStatus);
-  if (status === undefined) {
+  const selected = statuses.entries.find(({ name }) => name === selectedStatus);
+  if (selected === undefined) {
     return failure(
       join(project.path, selectedStatus),
       'status-not-found',
@@ -273,45 +334,32 @@ async function createTicketWhileLocked(
   }
 
   let highestId = 0n;
-  for (const projectStatus of statuses.entries) {
-    const tickets = await discoverTickets(projectStatus);
-    const ticketDiagnostic = tickets.diagnostics.at(0);
-    if (ticketDiagnostic !== undefined) {
-      return { ok: false, diagnostic: ticketDiagnostic };
-    }
-    for (const existingTicket of tickets.entries) {
-      if (existingTicket.id > highestId) highestId = existingTicket.id;
+  const projectEntries = await readProjectEntries(project.path);
+  if (!projectEntries.ok) return projectEntries;
+  for (const name of projectEntries.value) {
+    const match = /^\.ticket-id-(\d+)-claim$/u.exec(name);
+    if (match !== null) {
+      const claimedId = BigInt(match[1]);
+      if (claimedId > highestId) highestId = claimedId;
     }
   }
-
-  const id = highestId + 1n;
-  const name = `${id.toString().padStart(3, '0')}-${input.description}`;
-  const ticket = {
-    id,
-    name,
-    description: input.description,
-    path: join(status.path, `${name}.md`),
-    status,
-  } satisfies Ticket;
-  const write = await writeNewTrackerDocument(
-    ticket.path,
-    {
-      metadata: {
-        'Assigned-To': input.assignee ?? null,
-        Tags: [...(input.tags ?? [])],
-        Parent: input.parent ?? null,
-        'Blocked-By': [...(input.blockedBy ?? [])],
-      },
-      body: '',
-    },
-    () => {
-      const compromised = lock.compromisedError();
-      return compromised === undefined
-        ? { ok: true, value: undefined }
-        : filesystemFailure(lock.path, compromised);
+  for (const status of statuses.entries) {
+    const tickets = await discoverTickets(status);
+    const diagnostic = tickets.diagnostics.at(0);
+    if (diagnostic !== undefined) return { ok: false, diagnostic };
+    for (const ticket of tickets.entries) {
+      if (ticket.id > highestId) highestId = ticket.id;
     }
-  );
-  return write.ok ? { ok: true, value: ticket } : write;
+  }
+  return { ok: true, value: { highestId, status: selected } };
+}
+
+async function readProjectEntries(path: string): Promise<Outcome<string[]>> {
+  try {
+    return { ok: true, value: await readdir(path) };
+  } catch (error) {
+    return filesystemFailure(path, error);
+  }
 }
 
 function validateTicketInput(
