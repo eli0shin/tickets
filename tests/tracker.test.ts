@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, spyOn, test } from 'bun:test';
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import {
+  mkdtemp,
+  mkdir,
+  readFile,
+  rm,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createLintWorkspace } from './fixtures/lint-workspace.ts';
@@ -323,6 +330,26 @@ describe('tracker project lint', () => {
         'duplicate-git-repo',
       ].toSorted()
     );
+  });
+
+  test('reads symlinked project metadata and ignores unrelated symlinks', async () => {
+    const workspaceRoot = await temporaryWorkspace();
+    const projectPath = join(workspaceRoot, 'symlinked-project');
+    const metadataPath = join(workspaceRoot, 'project-metadata.md');
+    await mkdir(join(projectPath, 'todo'), { recursive: true });
+    await writeFile(
+      metadataPath,
+      '---\nDefault-Status: todo\nGit-Repo:\n---\n'
+    );
+    await Promise.all([
+      symlink('../project-metadata.md', join(projectPath, 'project.md')),
+      symlink(metadataPath, join(projectPath, 'unrelated-link')),
+    ]);
+
+    const result =
+      await createTracker(workspaceRoot).lintProject('symlinked-project');
+
+    expect(result).toEqual({ ok: true, violations: [] });
   });
 
   test('returns invocation and filesystem failures outside the finding catalog', async () => {

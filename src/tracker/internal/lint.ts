@@ -61,10 +61,15 @@ export async function lintProject(
   let metadataIsFile = false;
 
   for (const entry of projectEntries.entries) {
-    if (entry.name.startsWith('.') || entry.isSymbolicLink()) continue;
+    if (entry.name.startsWith('.')) continue;
     const path = join(projectPath, entry.name);
-    if (entry.name === 'project.md' && entry.isFile()) {
+    if (
+      entry.name === 'project.md' &&
+      (entry.isFile() || entry.isSymbolicLink())
+    ) {
       metadataIsFile = true;
+    } else if (entry.isSymbolicLink()) {
+      continue;
     } else if (entry.isDirectory() && isNormalizedName(entry.name)) {
       statuses.push({ name: entry.name, path });
     } else {
