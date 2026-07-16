@@ -955,7 +955,7 @@ describe('tracker document parsing and canonical writing', () => {
     ).toBe(true);
   });
 
-  test('accepts and rewrites comment-only empty ticket metadata', async () => {
+  test('accepts comment-only empty ticket metadata through the YAML document', async () => {
     const workspaceRoot = await temporaryWorkspace();
     const statusPath = join(workspaceRoot, 'alpha-project', 'todo');
     const ticketPath = join(statusPath, '001-empty.md');
@@ -981,7 +981,9 @@ describe('tracker document parsing and canonical writing', () => {
         outcome.value
       )
     ).toEqual({ ok: true, value: undefined });
-    expect(await readFile(ticketPath, 'utf8')).toBe('---\n{}\n---\nBody\n');
+    expect(await readFile(ticketPath, 'utf8')).toBe(
+      '---\n# draft\n\n\n---\nBody\n'
+    );
   });
 
   test('round-trips semantically valid unknown metadata fields', async () => {
@@ -1042,22 +1044,17 @@ describe('tracker document parsing and canonical writing', () => {
       )
     ).toEqual(firstRead);
     const canonical = await readFile(ticketPath, 'utf8');
-    expect(canonical.includes('explicit-float: 1.0')).toBe(true);
-    expect(canonical.includes('integer-float: 1.0')).toBe(true);
-    expect(canonical.includes('negative-zero: -0.0')).toBe(true);
+    expect(canonical.includes('explicit-float: !!float')).toBe(true);
   });
 
-  test('rejects lossy YAML shapes without emitting parser output', async () => {
+  test('rejects invalid top-level keys and unresolved tags without emitting parser output', async () => {
     const workspaceRoot = await temporaryWorkspace();
     const statusPath = join(workspaceRoot, 'alpha-project', 'todo');
     await mkdir(statusPath, { recursive: true });
     const sources = new Map([
       ['001-colliding-keys.md', '---\n1: numeric\n"1": string\n---\nBody\n'],
       ['002-collection-key.md', '---\n? [one, two]\n: collection\n---\nBody\n'],
-      ['003-unsupported-tag.md', '---\nUnknown: !foo value\n---\nBody\n'],
-      ['004-ordered-map.md', '---\nUnknown: !!omap [one: 1]\n---\nBody\n'],
-      ['005-set.md', '---\nUnknown: !!set {one: null}\n---\nBody\n'],
-      ['006-binary.md', '---\nUnknown: !!binary SGk=\n---\nBody\n'],
+      ['003-unresolved-tag.md', '---\nUnknown: !foo value\n---\nBody\n'],
     ]);
     await Promise.all(
       [...sources].map(([name, source]) =>
@@ -1080,9 +1077,6 @@ describe('tracker document parsing and canonical writing', () => {
         outcome.ok ? 'success' : outcome.diagnostic.code
       )
     ).toEqual([
-      'malformed-ticket-yaml',
-      'malformed-ticket-yaml',
-      'malformed-ticket-yaml',
       'malformed-ticket-yaml',
       'malformed-ticket-yaml',
       'malformed-ticket-yaml',
@@ -1230,38 +1224,19 @@ describe('tracker document parsing and canonical writing', () => {
     await writeFile(ticketPath, original);
 
     const { tracker, ticket } = await discoverTicket(workspaceRoot);
-    const unsupported = [
-      Symbol('unsupported'),
-      new Date('2026-01-01T00:00:00Z'),
-      new Map([['key', 'value']]),
-      new Set(['value']),
-      new Uint8Array([1, 2]),
-    ];
-    const outcomes = await Promise.all(
-      unsupported.map((value) =>
-        tracker.writeTicket(
-          ticket.status.project.name,
-          ticket.status.name,
-          ticket.name,
-          {
-            metadata: { Unknown: value },
-            body: 'Changed\n',
-          }
-        )
-      )
+    const outcome = await tracker.writeTicket(
+      ticket.status.project.name,
+      ticket.status.name,
+      ticket.name,
+      {
+        metadata: { Unknown: Symbol('unsupported') },
+        body: 'Changed\n',
+      }
     );
 
-    expect(
-      outcomes.map((outcome) =>
-        outcome.ok ? 'success' : outcome.diagnostic.code
-      )
-    ).toEqual([
-      'serialization-error',
-      'serialization-error',
-      'serialization-error',
-      'serialization-error',
-      'serialization-error',
-    ]);
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) throw new Error('Expected serialization failure');
+    expect(outcome.diagnostic.code).toBe('serialization-error');
     expect(await readFile(ticketPath, 'utf8')).toBe(original);
   });
 
@@ -1303,7 +1278,20 @@ describe('tracker ticket mutations', () => {
     await writeFile(join(alphaTodo, '001-old-name.md'), targetSource);
     await writeFile(
       join(alphaTodo, '002-local-child.md'),
-      '---\nParent: 001-old-name\nBlocked-By: [001-old-name, alpha-project/001-old-name]\nUnknown: retained\n---\nLocal\n'
+      [
+        '---',
+        'Parent: 001-old-name',
+        'Blocked-By: [001-old-name, alpha-project/001-old-name]',
+        'Unknown:',
+        '  ordered: !!omap [one: 1]',
+        '  selected: !!set {one: null}',
+        '  bytes: !!binary SGk=',
+        '  nested:',
+        '    1: numeric',
+        '---',
+        'Local',
+        '',
+      ].join('\n')
     );
     await writeFile(
       join(betaTodo, '001-cross-child.md'),
@@ -1343,14 +1331,34 @@ describe('tracker ticket mutations', () => {
     );
     expect(local.ok).toBe(true);
     if (!local.ok) throw new Error(local.diagnostic.message);
-    expect(local.value).toEqual({
-      metadata: {
-        Parent: '001-new-name',
-        'Blocked-By': ['001-new-name', 'alpha-project/001-new-name'],
-        Unknown: 'retained',
-      },
-      body: 'Local\n',
+    expect(local.value.metadata.Parent).toBe('001-new-name');
+    expect(local.value.metadata['Blocked-By']).toEqual([
+      '001-new-name',
+      'alpha-project/001-new-name',
+    ]);
+    const unknown = local.value.metadata.Unknown;
+    if (unknown === null || typeof unknown !== 'object') {
+      throw new Error('Expected unknown metadata collection');
+    }
+    expect('ordered' in unknown ? unknown.ordered : undefined).toBeInstanceOf(
+      Map
+    );
+    expect('selected' in unknown ? unknown.selected : undefined).toBeInstanceOf(
+      Set
+    );
+    expect('bytes' in unknown ? unknown.bytes : undefined).toBeInstanceOf(
+      Uint8Array
+    );
+    expect('nested' in unknown ? unknown.nested : undefined).toEqual({
+      '1': 'numeric',
     });
+    const rewrittenSource = await readFile(
+      join(alphaTodo, '002-local-child.md'),
+      'utf8'
+    );
+    expect(rewrittenSource.includes('!!omap')).toBe(true);
+    expect(rewrittenSource.includes('!!set')).toBe(true);
+    expect(rewrittenSource.includes('!!binary')).toBe(true);
     const cross = await tracker.readTicket(
       'beta-project',
       'todo',
