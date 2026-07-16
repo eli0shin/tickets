@@ -157,7 +157,7 @@ function invalidMetadata(
 
 function matches(ticket: TicketSummary, criteria: SearchCriteria): boolean {
   return (
-    allEqual(criteria.statuses, ticket.status) &&
+    matchesOne(criteria.statuses, ticket.status) &&
     containsAll(ticket.tags, criteria.tags) &&
     allEqual(criteria.assignedTo, ticket.assignedTo) &&
     (!criteria.unassigned || ticket.assignedTo === null) &&
@@ -165,6 +165,13 @@ function matches(ticket: TicketSummary, criteria: SearchCriteria): boolean {
     containsAll(ticket.blockedBy, criteria.blockedBy) &&
     (!criteria.unblocked || ticket.blockedBy.length === 0)
   );
+}
+
+function matchesOne(
+  values: readonly string[] | undefined,
+  expected: string
+): boolean {
+  return values === undefined || values.includes(expected);
 }
 
 function allEqual(

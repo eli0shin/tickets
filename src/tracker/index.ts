@@ -328,8 +328,16 @@ export function createTracker(workspaceRoot: string): Tracker {
           fatal: true,
         };
       }
+      const selectedStatuses = selectSearchStatuses(
+        projectAt(projectName),
+        statuses.entries,
+        criteria.statuses
+      );
+      if (!selectedStatuses.ok) {
+        return failedQuery(projectName, selectedStatuses.diagnostic);
+      }
       const discoveries = await Promise.all(
-        statuses.entries.map(discoverTickets)
+        selectedStatuses.value.map(discoverTickets)
       );
       return summarizeTickets(
         projectName,
@@ -344,6 +352,33 @@ export function createTracker(workspaceRoot: string): Tracker {
       moveTicket(absoluteRoot, projectName, reference, statusName),
     completeTicket: (projectName, reference) =>
       completeTicket(absoluteRoot, projectName, reference),
+  };
+}
+
+function selectSearchStatuses(
+  project: Project,
+  statuses: readonly Status[],
+  requested: readonly string[] | undefined
+): Outcome<readonly Status[]> {
+  if (requested === undefined) return { ok: true, value: statuses };
+
+  const byName = new Map(statuses.map((status) => [status.name, status]));
+  for (const name of requested) {
+    if (!byName.has(name)) {
+      return {
+        ok: false,
+        diagnostic: {
+          path: join(project.path, name),
+          code: 'status-not-found',
+          message: `Status not found: ${name}`,
+        },
+      };
+    }
+  }
+  const requestedNames = new Set(requested);
+  return {
+    ok: true,
+    value: statuses.filter((status) => requestedNames.has(status.name)),
   };
 }
 

@@ -50,6 +50,23 @@ Commands:
   help [command]                    display help for command
 `;
 
+const searchHelpOutput = `Usage: tickets search [options]
+
+search tickets using structured criteria
+
+Options:
+  --status <status>         match tickets in this status (repeatable) (default:
+                            [])
+  --tag <tag>               match every tag (default: [])
+  --assigned-to <assignee>  match every assignee (default: [])
+  --unassigned              match unassigned tickets
+  --parent <reference>      match every parent reference (default: [])
+  --blocked-by <reference>  match every blocker reference (default: [])
+  --unblocked               match tickets without blockers
+  --json                    emit JSON output
+  -h, --help                display help for command
+`;
+
 type ProcessResult = {
   stdout: string;
   stderr: string;
@@ -344,6 +361,59 @@ Options:
       exitCode: 0,
     });
   });
+  test('search status scopes parsing, unions repeats, and documents its semantics', async () => {
+    const cwd = await mkdtemp(join(temporaryDirectory, 'status-search-'));
+    const workspace = join(cwd, 'workspace');
+    const projectPath = join(workspace, 'alpha-project');
+    const todoPath = join(projectPath, 'todo');
+    const progressPath = join(projectPath, 'in-progress');
+    const donePath = join(projectPath, 'done');
+    const todoTicket = join(todoPath, '001-todo.md');
+    const progressTicket = join(progressPath, '002-progress.md');
+    const malformedTicket = join(donePath, '003-malformed.md');
+    await mkdir(todoPath, { recursive: true });
+    await mkdir(progressPath);
+    await mkdir(donePath);
+    await writeFile(todoTicket, '---\nTags: []\n---\n');
+    await writeFile(progressTicket, '---\nTags: []\n---\n');
+    await writeFile(malformedTicket, '---\nTags: [broken\n---\n');
+    const base = [
+      ...getCommand(),
+      '--workspace',
+      workspace,
+      '--project',
+      'alpha-project',
+      'search',
+    ];
+
+    expect(await run([...base, '--status', 'todo'])).toEqual({
+      stdout: `todo\t001-todo\t${todoTicket}\n`,
+      stderr: '',
+      exitCode: 0,
+    });
+    expect(
+      await run([...base, '--status', 'todo', '--status', 'in-progress'])
+    ).toEqual({
+      stdout: `todo\t001-todo\t${todoTicket}\nin-progress\t002-progress\t${progressTicket}\n`,
+      stderr: '',
+      exitCode: 0,
+    });
+    expect(await run(base)).toEqual({
+      stdout: `todo\t001-todo\t${todoTicket}\nin-progress\t002-progress\t${progressTicket}\n`,
+      stderr: `${malformedTicket}\tFlow sequence in block collection must be sufficiently indented and end with a ]\n`,
+      exitCode: 2,
+    });
+    expect(await run([...base, '--status', 'missing'])).toEqual({
+      stdout: '',
+      stderr: 'Status not found: missing\n',
+      exitCode: 2,
+    });
+    expect(await run([...getCommand(), 'search', '--help'])).toEqual({
+      stdout: searchHelpOutput,
+      stderr: '',
+      exitCode: 0,
+    });
+  }, 15_000);
 
   test('standard version options print only the package version', async () => {
     for (const option of ['-V', '--version']) {
@@ -1022,9 +1092,21 @@ describe('read-only commands', () => {
     });
     expect(
       await run([...base, 'search', '--status', 'missing'], { cwd })
-    ).toEqual({ stdout: '', stderr: '', exitCode: 0 });
+    ).toEqual({
+      stdout: '',
+      stderr: 'Status not found: missing\n',
+      exitCode: 2,
+    });
+    expect(
+      await run([...base, 'search', '--status', 'todo', '--status', 'done'], {
+        cwd,
+      })
+    ).toEqual({
+      stdout: `done\t002-second\t${secondPath}\ntodo\t010-first\t${firstPath}\n`,
+      stderr: '',
+      exitCode: 0,
+    });
     for (const repeated of [
-      ['--status', 'todo', '--status', 'done'],
       ['--assigned-to', 'pi', '--assigned-to', 'someone-else'],
       ['--parent', '001-parent', '--parent', '002-other'],
     ]) {
@@ -1050,6 +1132,7 @@ describe('read-only commands', () => {
     const validPath = join(statusPath, '001-valid.md');
     const malformedPath = join(statusPath, '002-malformed.md');
     await mkdir(statusPath, { recursive: true });
+    await mkdir(join(workspace, 'alpha-project', 'done'));
     await writeFile(validPath, '---\nTags: []\n---\n');
     await writeFile(malformedPath, '---\nTags: [broken\n---\n');
     const base = [
@@ -1075,8 +1158,8 @@ describe('read-only commands', () => {
         null,
         2
       )}\n`,
-      stderr: malformedDiagnostic,
-      exitCode: 2,
+      stderr: '',
+      exitCode: 0,
     });
 
     expect(
