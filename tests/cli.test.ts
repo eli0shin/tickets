@@ -103,6 +103,26 @@ describe.each([
     });
   });
 
+  test('a missing --target value is a usage failure', async () => {
+    expect(
+      await run([...getCommand(), 'skill', 'install', '--target'])
+    ).toEqual({
+      stdout: '',
+      stderr: "error: option '--target <path>' argument missing\n",
+      exitCode: 2,
+    });
+  });
+
+  test('an unknown option is a one-line usage failure', async () => {
+    expect(await run([...getCommand(), 'skill', 'install', '--targt'])).toEqual(
+      {
+        stdout: '',
+        stderr: "error: unknown option '--targt'\n",
+        exitCode: 2,
+      }
+    );
+  });
+
   test('installs the exact bundled bytes into an override target', async () => {
     const target = join(temporaryDirectory, `${_name}-override`, 'tickets');
     const installedPath = resolve(target, 'SKILL.md');

@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import { Command } from '@commander-js/extra-typings';
+import { CommanderError } from 'commander';
 import { version } from '../package.json';
 import { writeDiagnostic, writeSuccess } from './output.ts';
 import {
@@ -18,6 +19,8 @@ export function createProgram({
   interactive = Boolean(process.stdin.isTTY && process.stderr.isTTY),
 }: CliDependencies = {}): Command {
   const program = new Command()
+    .exitOverride()
+    .showSuggestionAfterError(false)
     .name('tickets')
     .description('Manage tickets in a local filesystem tracker')
     .version(version, '-v, --version')
@@ -54,7 +57,17 @@ export function createProgram({
 }
 
 export async function run(argv: string[] = process.argv): Promise<void> {
-  await createProgram().parseAsync(argv);
+  try {
+    await createProgram().parseAsync(argv);
+  } catch (error) {
+    if (!(error instanceof CommanderError)) {
+      throw error;
+    }
+
+    if (error.exitCode !== 0) {
+      process.exitCode = 2;
+    }
+  }
 }
 
 if (import.meta.main) {
