@@ -698,6 +698,26 @@ describe('tracker resource creation', () => {
     }
   });
 
+  test('cleans up failed project creation so it can be retried', async () => {
+    const workspaceRoot = await temporaryWorkspace();
+    const tracker = createTracker(workspaceRoot);
+    const projectName = 'retry-project';
+
+    const failed = await tracker.createProject(projectName, {
+      defaultStatus: 'a'.repeat(256),
+    });
+    expect(failed.ok).toBe(false);
+    expect(await readdir(workspaceRoot)).toEqual([]);
+
+    const retried = await tracker.createProject(projectName);
+    expect(retried.ok).toBe(true);
+    expect(
+      (await tracker.discoverStatuses(projectName)).entries.map(
+        ({ name }) => name
+      )
+    ).toEqual(['done', 'in-progress', 'todo']);
+  });
+
   test('creates statuses only in existing projects and never overwrites', async () => {
     const workspaceRoot = await temporaryWorkspace();
     const tracker = createTracker(workspaceRoot);

@@ -1,4 +1,4 @@
-import { mkdir } from 'node:fs/promises';
+import { mkdir, rmdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { lock as acquireFileLock } from 'proper-lockfile';
 import type { DocumentDiagnostic, Outcome } from './documents.ts';
@@ -28,27 +28,51 @@ export async function createProject(
   }
 
   const project = { name, path: join(workspaceRoot, name) } satisfies Project;
+  const createdDirectories: string[] = [];
   try {
     await mkdir(workspaceRoot, { recursive: true });
     await mkdir(project.path);
-    await Promise.all(
-      [...new Set([defaultStatus, 'in-progress', 'done'])].map((status) =>
-        mkdir(join(project.path, status))
-      )
-    );
-    const write = await writeNewTrackerDocument(
-      join(project.path, 'project.md'),
-      {
-        metadata: { 'Default-Status': defaultStatus, 'Git-Repo': null },
-        body: '',
-      }
-    );
-    return write.ok ? { ok: true, value: project } : write;
+    createdDirectories.push(project.path);
+
+    for (const status of new Set(['in-progress', 'done', defaultStatus])) {
+      const statusPath = join(project.path, status);
+      await mkdir(statusPath);
+      createdDirectories.push(statusPath);
+    }
+
+    const projectDocumentPath = join(project.path, 'project.md');
+    const write = await writeNewTrackerDocument(projectDocumentPath, {
+      metadata: { 'Default-Status': defaultStatus, 'Git-Repo': null },
+      body: '',
+    });
+    if (!write.ok) {
+      const cleanup = await cleanUpFailedProjectCreation(createdDirectories);
+      return cleanup.ok ? write : cleanup;
+    }
+    return { ok: true, value: project };
   } catch (error) {
+    const cleanup = await cleanUpFailedProjectCreation(createdDirectories);
+    if (!cleanup.ok) return cleanup;
     return hasErrorCode(error, 'EEXIST')
       ? resourceExists(project.path)
       : filesystemFailure(project.path, error);
   }
+}
+
+async function cleanUpFailedProjectCreation(
+  entries: readonly string[]
+): Promise<Outcome<undefined>> {
+  let cleanupFailure: Outcome<undefined> | undefined;
+  for (const path of entries.toReversed()) {
+    try {
+      await rmdir(path);
+    } catch (error) {
+      if (!hasErrorCode(error, 'ENOENT') && cleanupFailure === undefined) {
+        cleanupFailure = filesystemFailure(path, error);
+      }
+    }
+  }
+  return cleanupFailure ?? { ok: true, value: undefined };
 }
 
 export async function createStatus(
