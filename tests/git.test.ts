@@ -13,6 +13,7 @@ import { formatProjectSelectionFailure } from '../src/output.ts';
 let temporaryDirectory: string;
 let repository: string;
 const repositoryOverrideVariables = new Set([
+  'GIT_CEILING_DIRECTORIES',
   'GIT_COMMON_DIR',
   'GIT_DIR',
   'GIT_WORK_TREE',
@@ -20,6 +21,7 @@ const repositoryOverrideVariables = new Set([
 const originalGitDirectory = process.env.GIT_DIR;
 const originalGitWorkTree = process.env.GIT_WORK_TREE;
 const originalGitCommonDirectory = process.env.GIT_COMMON_DIR;
+const originalGitCeilingDirectories = process.env.GIT_CEILING_DIRECTORIES;
 
 async function git(arguments_: string[], cwd = repository): Promise<string> {
   const environment = Object.fromEntries(
@@ -46,6 +48,9 @@ async function setOrigin(remote: string): Promise<void> {
 }
 
 function restoreRepositoryEnvironment(): void {
+  if (originalGitCeilingDirectories === undefined)
+    delete process.env.GIT_CEILING_DIRECTORIES;
+  else process.env.GIT_CEILING_DIRECTORIES = originalGitCeilingDirectories;
   if (originalGitDirectory === undefined) delete process.env.GIT_DIR;
   else process.env.GIT_DIR = originalGitDirectory;
   if (originalGitWorkTree === undefined) delete process.env.GIT_WORK_TREE;
@@ -185,6 +190,25 @@ describe('project selection', () => {
             name: 'overridden',
             gitRepo: 'https://example.com/overridden/repo.git',
           },
+          {
+            name: 'current',
+            gitRepo: 'https://example.com/current/repo.git',
+          },
+        ],
+      })
+    ).toEqual({ ok: true, project: 'current' });
+  });
+
+  test('ignores inherited discovery ceilings when inspecting a nested worktree directory', async () => {
+    await setOrigin('https://example.com/current/repo.git');
+    const nestedDirectory = join(repository, 'nested');
+    await mkdir(nestedDirectory);
+    process.env.GIT_CEILING_DIRECTORIES = repository;
+
+    expect(
+      await selectProject({
+        cwd: nestedDirectory,
+        loadProjects: async () => [
           {
             name: 'current',
             gitRepo: 'https://example.com/current/repo.git',
