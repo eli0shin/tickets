@@ -1,5 +1,12 @@
 import { afterAll, beforeAll, describe, expect, spyOn, test } from 'bun:test';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { version } from '../package.json';
@@ -48,6 +55,115 @@ type RunOptions = {
   cwd?: string;
   env?: Record<string, string>;
 };
+
+type JsonRestrictionCase = {
+  name: string;
+  arguments: (workspace: string, skillTarget: string) => string[];
+};
+
+const unauthorizedJsonCommands: readonly JsonRestrictionCase[] = [
+  {
+    name: 'project create',
+    arguments: (workspace: string) => [
+      '--workspace',
+      workspace,
+      'project',
+      'create',
+      'new-project',
+      '--json',
+    ],
+  },
+  {
+    name: 'status create',
+    arguments: (workspace: string) => [
+      '--workspace',
+      workspace,
+      '--project',
+      'alpha-project',
+      'status',
+      'create',
+      'review',
+      '--json',
+    ],
+  },
+  {
+    name: 'show',
+    arguments: (workspace: string) => [
+      '--workspace',
+      workspace,
+      '--project',
+      'alpha-project',
+      'show',
+      '001-original',
+      '--json',
+    ],
+  },
+  {
+    name: 'create',
+    arguments: (workspace: string) => [
+      '--workspace',
+      workspace,
+      '--project',
+      'alpha-project',
+      'create',
+      'new-ticket',
+      '--json',
+    ],
+  },
+  {
+    name: 'rename',
+    arguments: (workspace: string) => [
+      '--workspace',
+      workspace,
+      '--project',
+      'alpha-project',
+      'rename',
+      '001-original',
+      'renamed',
+      '--json',
+    ],
+  },
+  {
+    name: 'move',
+    arguments: (workspace: string) => [
+      '--workspace',
+      workspace,
+      '--project',
+      'alpha-project',
+      'move',
+      '001-original',
+      'done',
+      '--json',
+    ],
+  },
+  {
+    name: 'done',
+    arguments: (workspace: string) => [
+      '--workspace',
+      workspace,
+      '--project',
+      'alpha-project',
+      'done',
+      '001-original',
+      '--json',
+    ],
+  },
+  {
+    name: 'skill install',
+    arguments: (workspace: string, skillTarget: string) => [
+      '--workspace',
+      workspace,
+      'skill',
+      'install',
+      '--target',
+      skillTarget,
+      '--json',
+    ],
+  },
+];
+
+const ticketSource =
+  '---\nAssigned-To:\nTags: []\nParent:\nBlocked-By: []\n---\nOriginal ticket\n';
 
 async function run(
   command: string[],
@@ -172,6 +288,51 @@ describe.each([
       }
     );
   });
+
+  for (const jsonCase of unauthorizedJsonCommands) {
+    test(`${jsonCase.name} rejects --json before performing any operation`, async () => {
+      const sandbox = await mkdtemp(
+        join(temporaryDirectory, 'json-restriction-')
+      );
+      const workspace = join(sandbox, 'workspace');
+      const projectPath = join(workspace, 'alpha-project');
+      const todoPath = join(projectPath, 'todo');
+      const donePath = join(projectPath, 'done');
+      const ticketPath = join(todoPath, '001-original.md');
+      const projectSource =
+        '---\nDefault-Status: todo\nGit-Repo:\n---\nProject body\n';
+      const skillTarget = join(sandbox, 'skill-target');
+      await mkdir(todoPath, { recursive: true });
+      await mkdir(donePath);
+      await writeFile(join(projectPath, 'project.md'), projectSource);
+      await writeFile(ticketPath, ticketSource);
+
+      expect(
+        await run([
+          ...getCommand(),
+          ...jsonCase.arguments(workspace, skillTarget),
+        ])
+      ).toEqual({
+        stdout: '',
+        stderr: "error: unknown option '--json'\n",
+        exitCode: 2,
+      });
+
+      expect(await readdir(sandbox)).toEqual(['workspace']);
+      expect(await readdir(workspace)).toEqual(['alpha-project']);
+      expect((await readdir(projectPath)).toSorted()).toEqual([
+        'done',
+        'project.md',
+        'todo',
+      ]);
+      expect(await readdir(todoPath)).toEqual(['001-original.md']);
+      expect(await readdir(donePath)).toEqual([]);
+      expect(await readFile(join(projectPath, 'project.md'), 'utf8')).toBe(
+        projectSource
+      );
+      expect(await readFile(ticketPath, 'utf8')).toBe(ticketSource);
+    });
+  }
 
   test('installs the exact bundled bytes into an override target', async () => {
     const target = join(temporaryDirectory, `${_name}-override`, 'tickets');
@@ -645,7 +806,7 @@ describe('read-only commands', () => {
       stderr: '',
       exitCode: 0,
     });
-  });
+  }, 15_000);
 
   test('retains partial output, reports malformed files, and rejects conflicting criteria', async () => {
     const cwd = await mkdtemp(join(temporaryDirectory, 'read-partial-'));
