@@ -344,8 +344,12 @@ function visitObjectGraph(
         if (item !== null && typeof item === 'object') pending.push(item);
       }
     } else {
-      for (const key of Object.keys(value)) {
-        const item: unknown = Reflect.get(value, key);
+      for (const key of Reflect.ownKeys(value)) {
+        const descriptor = Object.getOwnPropertyDescriptor(value, key);
+        const item: unknown =
+          descriptor !== undefined && 'value' in descriptor
+            ? descriptor.value
+            : undefined;
         if (item !== null && typeof item === 'object') pending.push(item);
       }
     }
@@ -531,11 +535,20 @@ function serializeDocument(
   document: TrackerDocument
 ): Outcome<string> {
   try {
-    const parsed = findParsedMetadata(document.metadata);
     if (
       Object.getPrototypeOf(document.metadata) !== Object.prototype ||
-      (parsed === undefined &&
-        !isSerializableValue(document.metadata, new WeakSet()))
+      !hasOnlyYamlMetadataProperties(document.metadata, new WeakSet())
+    ) {
+      return serializationFailure(
+        path,
+        'YAML front matter contains an unsupported value'
+      );
+    }
+
+    const parsed = findParsedMetadata(document.metadata);
+    if (
+      parsed === undefined &&
+      !isSerializableValue(document.metadata, new WeakSet())
     ) {
       return serializationFailure(
         path,
@@ -562,6 +575,80 @@ function serializeDocument(
   } catch (error) {
     return serializationFailure(path, errorMessage(error));
   }
+}
+
+function hasOnlyYamlMetadataProperties(
+  value: unknown,
+  visited: WeakSet<object>
+): boolean {
+  if (
+    value === null ||
+    typeof value === 'string' ||
+    typeof value === 'boolean' ||
+    typeof value === 'bigint' ||
+    typeof value === 'number'
+  ) {
+    return true;
+  }
+  if (typeof value !== 'object') return false;
+  if (visited.has(value)) return true;
+  visited.add(value);
+
+  if (Buffer.isBuffer(value)) {
+    return hasOnlyIndexedDataProperties(value);
+  }
+  if (value instanceof Date) return Reflect.ownKeys(value).length === 0;
+  if (value instanceof Map) {
+    return (
+      Reflect.ownKeys(value).length === 0 &&
+      [...value].every(
+        ([key, item]) =>
+          hasOnlyYamlMetadataProperties(key, visited) &&
+          hasOnlyYamlMetadataProperties(item, visited)
+      )
+    );
+  }
+  if (value instanceof Set) {
+    return (
+      Reflect.ownKeys(value).length === 0 &&
+      [...value].every((item) => hasOnlyYamlMetadataProperties(item, visited))
+    );
+  }
+
+  const array = Array.isArray(value);
+  if (!array && Object.getPrototypeOf(value) !== Object.prototype) return false;
+  const keys = Reflect.ownKeys(value);
+  if (
+    array &&
+    (keys.length !== value.length + 1 ||
+      keys.some((key, index) =>
+        index < value.length ? key !== String(index) : key !== 'length'
+      ))
+  ) {
+    return false;
+  }
+  return keys.every((key) => {
+    if (array && key === 'length') return true;
+    if (typeof key !== 'string') return false;
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    return (
+      descriptor?.enumerable === true &&
+      'value' in descriptor &&
+      hasOnlyYamlMetadataProperties(descriptor.value, visited)
+    );
+  });
+}
+
+function hasOnlyIndexedDataProperties(value: Buffer): boolean {
+  const keys = Reflect.ownKeys(value);
+  return (
+    keys.length === value.length &&
+    keys.every((key, index) => {
+      if (key !== String(index)) return false;
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      return descriptor?.enumerable === true && 'value' in descriptor;
+    })
+  );
 }
 
 function isSerializableValue(

@@ -1196,6 +1196,114 @@ describe('tracker document parsing and canonical writing', () => {
     );
   });
 
+  test('rejects unsupported own properties throughout parsed metadata', async () => {
+    const workspaceRoot = await temporaryWorkspace();
+    const statusPath = join(workspaceRoot, 'alpha-project', 'todo');
+    await mkdir(statusPath, { recursive: true });
+    const source =
+      '---\nWhen: !!timestamp 2002-12-14\nNested: {value: retained}\n---\n';
+    const variants = [
+      'root-hidden',
+      'root-symbol',
+      'root-accessor',
+      'nested-hidden',
+      'nested-symbol',
+      'nested-accessor',
+    ];
+    const tracker = createTracker(workspaceRoot);
+
+    for (const [index, variant] of variants.entries()) {
+      const name = `${String(index + 1).padStart(3, '0')}-${variant}`;
+      const ticketPath = join(statusPath, `${name}.md`);
+      await writeFile(ticketPath, source);
+      const document = await tracker.readTicket('alpha-project', 'todo', name);
+      if (!document.ok) throw new Error(document.diagnostic.message);
+
+      const nested = document.value.metadata.Nested;
+      if (nested === null || typeof nested !== 'object') {
+        throw new Error('Expected nested metadata map');
+      }
+      const target = variant.startsWith('root-')
+        ? document.value.metadata
+        : nested;
+      if (variant.endsWith('-hidden')) {
+        Object.defineProperty(target, 'Unsupported', {
+          enumerable: false,
+          value: 'not-yaml-metadata',
+        });
+      } else if (variant.endsWith('-symbol')) {
+        Object.defineProperty(target, Symbol('unsupported'), {
+          enumerable: true,
+          value: 'not-yaml-metadata',
+        });
+      } else {
+        Object.defineProperty(target, 'Unsupported', {
+          enumerable: true,
+          get: () => {
+            throw new Error('Accessor must not be invoked');
+          },
+        });
+      }
+
+      const outcome = await tracker.writeTicket(
+        'alpha-project',
+        'todo',
+        name,
+        document.value
+      );
+      expect(outcome.ok).toBe(false);
+      if (outcome.ok) throw new Error('Expected serialization to be refused');
+      expect(outcome.diagnostic).toEqual({
+        path: ticketPath,
+        code: 'serialization-error',
+        message: 'YAML front matter contains an unsupported value',
+      });
+      expect(await readFile(ticketPath, 'utf8')).toBe(source);
+    }
+
+    const collectionName = '007-collection-accessor';
+    const collectionPath = join(statusPath, `${collectionName}.md`);
+    const collectionSource = '---\nNested: {? [one, two]: retained}\n---\n';
+    await writeFile(collectionPath, collectionSource);
+    const collectionDocument = await tracker.readTicket(
+      'alpha-project',
+      'todo',
+      collectionName
+    );
+    if (!collectionDocument.ok) {
+      throw new Error(collectionDocument.diagnostic.message);
+    }
+    const collection = collectionDocument.value.metadata.Nested;
+    if (!(collection instanceof Map)) {
+      throw new Error('Expected nested metadata Map');
+    }
+    Object.defineProperty(collection, Symbol.iterator, {
+      get: () => {
+        throw new Error('Collection iterator accessor must not be invoked');
+      },
+    });
+    const copiedDocument = {
+      ...collectionDocument.value,
+      metadata: { ...collectionDocument.value.metadata },
+    };
+    const collectionOutcome = await tracker.writeTicket(
+      'alpha-project',
+      'todo',
+      collectionName,
+      copiedDocument
+    );
+    expect(collectionOutcome.ok).toBe(false);
+    if (collectionOutcome.ok) {
+      throw new Error('Expected collection serialization to be refused');
+    }
+    expect(collectionOutcome.diagnostic).toEqual({
+      path: collectionPath,
+      code: 'serialization-error',
+      message: 'YAML front matter contains an unsupported value',
+    });
+    expect(await readFile(collectionPath, 'utf8')).toBe(collectionSource);
+  });
+
   test('leaves aliased fields untouched when a deep edit cannot preserve shared identity', async () => {
     const workspaceRoot = await temporaryWorkspace();
     const statusPath = join(workspaceRoot, 'alpha-project', 'todo');
