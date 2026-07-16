@@ -11,6 +11,8 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { version } from '../package.json';
 import { createProgram } from '../src/cli.ts';
+import type { UpdateDependencies } from '../src/commands/update.ts';
+import { isNewerVersion } from '../src/update.ts';
 import { createLintWorkspace } from './fixtures/lint-workspace.ts';
 
 const repositoryRoot = join(import.meta.dir, '..');
@@ -41,6 +43,7 @@ Commands:
                                     references
   move <reference> <status>         move a ticket to another status
   done <reference>                  complete a ticket
+  update                            update Tickets CLI to latest version
   skill                             manage agent skills
   lint [options]                    validate the selected project
   help [command]                    display help for command
@@ -173,7 +176,11 @@ async function run(
 ): Promise<ProcessResult> {
   const process = Bun.spawn(command, {
     cwd,
-    env: env ? { ...processEnv(), ...env } : undefined,
+    env: {
+      ...processEnv(),
+      XDG_CONFIG_HOME: join(temporaryDirectory, 'config-home'),
+      ...env,
+    },
     stdin: stdin === undefined ? undefined : new Blob([stdin]),
     stdout: 'pipe',
     stderr: 'pipe',
@@ -247,6 +254,12 @@ beforeAll(async () => {
   temporaryDirectory = await mkdtemp(join(tmpdir(), 'tickets-packaging-'));
   executablePath = join(temporaryDirectory, 'tickets');
   interactiveExecutablePath = join(temporaryDirectory, 'tickets-interactive');
+  const configDirectory = join(temporaryDirectory, 'config-home/tickets');
+  await mkdir(configDirectory, { recursive: true });
+  await writeFile(
+    join(configDirectory, 'config.json'),
+    JSON.stringify({ config: { updateBehavior: 'off' } })
+  );
 
   for (const [source, output] of [
     ['src/cli.ts', executablePath],
@@ -289,6 +302,28 @@ describe.each([
       exitCode: 0,
     });
   }, 15_000);
+
+  test('update help exposes the explicit updater', async () => {
+    expect(await run([...getCommand(), 'update', '--help'])).toEqual({
+      stdout: `Usage: tickets update [options]
+
+update Tickets CLI to latest version
+
+Options:
+  -h, --help  display help for command
+`,
+      stderr: '',
+      exitCode: 0,
+    });
+  });
+
+  test('worker mode dispatches before normal CLI parsing', async () => {
+    expect(await run([...getCommand(), '--update-worker'])).toEqual({
+      stdout: '',
+      stderr: '',
+      exitCode: 0,
+    });
+  });
 
   test('standard version options print only the package version', async () => {
     for (const option of ['-V', '--version']) {
@@ -1507,4 +1542,54 @@ describe('ticket mutation commands', () => {
       exitCode: 2,
     });
   });
+});
+
+test('notify-mode update messages render after command output', async () => {
+  const workspace = join(temporaryDirectory, 'empty-notify-workspace');
+  await mkdir(workspace);
+  expect(
+    await captureProcessOutput(async () => {
+      await createProgram({
+        updateMessage: 'Update available: v1.2.3',
+      }).parseAsync([
+        'node',
+        'tickets',
+        '--workspace',
+        workspace,
+        'project',
+        'list',
+      ]);
+    })
+  ).toEqual({
+    stdout: 'Update available: v1.2.3\n',
+    stderr: '',
+    exitCode: undefined,
+  });
+});
+
+test('update uses the standard output and failure status boundary', async () => {
+  const update = {
+    fetchLatestVersion: async () => ({
+      success: false,
+      error: 'No releases found',
+    }),
+    isNewerVersion,
+    downloadBinary: async () => ({ success: true, data: 'unused' }),
+    replaceBinary: async () => ({ success: true, data: undefined }),
+  } satisfies UpdateDependencies;
+
+  expect(
+    await captureProcessOutput(async () => {
+      await createProgram({
+        currentVersion: '1.2.3',
+        executablePath: '/tmp/tickets',
+        update,
+      }).parseAsync(['node', 'tickets', 'update']);
+    })
+  ).toEqual({
+    stdout: 'Current version: 1.2.3\nChecking for updates...\n',
+    stderr: 'Error checking for updates: No releases found\n',
+    exitCode: 2,
+  });
+  process.exitCode = 0;
 });

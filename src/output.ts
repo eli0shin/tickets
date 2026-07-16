@@ -1,7 +1,11 @@
 import { createInterface } from 'node:readline/promises';
 import type { ProjectSelection } from './git.ts';
 import type { SkillInstallationResult } from './skill.ts';
-import type { CommandFailure, CommandOutcome } from './types.ts';
+import type {
+  CommandFailure,
+  CommandOutcome,
+  UpdateCommandOutcome,
+} from './types.ts';
 import type {
   DocumentDiagnostic,
   LintViolation,
@@ -90,6 +94,15 @@ export function writeCommandOutcome<Value>(
     return;
   }
   writeCommandFailure(outcome.failure);
+}
+
+export function writeUpdateOutcome(result: UpdateCommandOutcome): void {
+  for (const message of result.messages) writeSuccess(message);
+  writeCommandOutcome(result.outcome, () => undefined);
+}
+
+export function writeUpdateMessage(message: string | undefined): void {
+  if (message) writeSuccess(message);
 }
 
 export function formatProjectSelectionFailure(
