@@ -5,7 +5,6 @@ import {
   readFile,
   readdir,
   rm,
-  utimes,
   writeFile,
 } from 'node:fs/promises';
 import { basename, join } from 'node:path';
@@ -834,31 +833,28 @@ describe('tracker resource creation', () => {
     });
   });
 
-  test('recovers a stale ticket creation lock after an interrupted process', async () => {
+  test('ignores the former creation lock path without changing it', async () => {
     const workspaceRoot = await temporaryWorkspace();
     const tracker = createTracker(workspaceRoot);
     await tracker.createProject('alpha-project');
     const projectPath = join(workspaceRoot, 'alpha-project');
-    const lockPath = join(projectPath, '.ticket-creation-lock');
-    await mkdir(lockPath);
-    const staleTime = new Date(Date.now() - 60_000);
-    await utimes(lockPath, staleTime, staleTime);
+    const formerLockPath = join(projectPath, '.ticket-creation-lock');
+    const markerPath = join(formerLockPath, 'keep.txt');
+    await mkdir(formerLockPath);
+    await writeFile(markerPath, 'keep');
 
     const outcome = await tracker.createTicket('alpha-project', {
-      description: 'after-interruption',
+      description: 'without-hidden-state',
     });
     expect(outcome.ok).toBe(true);
     expect((await readdir(projectPath)).toSorted()).toEqual([
+      '.ticket-creation-lock',
       'done',
       'in-progress',
       'project.md',
       'todo',
     ]);
-    expect(
-      (await tracker.discoverTickets('alpha-project', 'todo')).entries.map(
-        ({ id }) => id
-      )
-    ).toEqual([1n]);
+    expect(await readFile(markerPath, 'utf8')).toBe('keep');
   });
 
   test('requires a valid declared default status even with an override', async () => {
