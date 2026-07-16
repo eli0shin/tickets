@@ -16,7 +16,7 @@ export type Status = {
 };
 
 export type Ticket = {
-  readonly id: number;
+  readonly id: bigint;
   readonly name: string;
   readonly description: string;
   readonly path: string;
@@ -125,8 +125,9 @@ export async function discoverTickets(
     });
   }
 
-  entries.sort(
-    (left, right) => left.id - right.id || left.name.localeCompare(right.name)
-  );
+  entries.sort((left, right) => {
+    if (left.id === right.id) return left.name.localeCompare(right.name);
+    return left.id < right.id ? -1 : 1;
+  });
   return { entries, diagnostics: [] };
 }

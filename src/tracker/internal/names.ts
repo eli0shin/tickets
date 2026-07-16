@@ -2,7 +2,7 @@ const NORMALIZED_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const TICKET_NAME_PATTERN = /^(\d{3,})-([a-z0-9]+(?:-[a-z0-9]+)*)$/;
 
 export type ParsedTicketName = {
-  readonly id: number;
+  readonly id: bigint;
   readonly name: string;
   readonly description: string;
 };
@@ -17,8 +17,8 @@ export function parseTicketName(value: string): ParsedTicketName | null {
 
   const idText = match[1];
   const description = match[2];
-  const id = Number(idText);
-  if (!Number.isSafeInteger(id) || id < 1) return null;
+  const id = BigInt(idText);
+  if (id < 1n) return null;
 
   return { id, name: value, description };
 }

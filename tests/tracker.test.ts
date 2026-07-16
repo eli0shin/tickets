@@ -76,12 +76,12 @@ describe('tracker naming contract', () => {
 
   test('parses positive, padded ticket names and references', () => {
     expect(parseTicketName('001-add-search')).toEqual({
-      id: 1,
+      id: 1n,
       name: '001-add-search',
       description: 'add-search',
     });
     expect(parseTicketName('1000-grow-naturally')).toEqual({
-      id: 1000,
+      id: 1000n,
       name: '1000-grow-naturally',
       description: 'grow-naturally',
     });
@@ -162,6 +162,8 @@ describe('tracker filesystem discovery', () => {
       writeFile(join(statusPath, '010-later.md'), ''),
       writeFile(join(statusPath, '002-earlier.md'), ''),
       writeFile(join(statusPath, '1000-large-id.md'), ''),
+      writeFile(join(statusPath, '9007199254740993-largest-id.md'), ''),
+      writeFile(join(statusPath, '9007199254740992-larger-id.md'), ''),
       writeFile(join(statusPath, '.003-hidden.md'), ''),
       writeFile(join(statusPath, '01-short.md'), ''),
       writeFile(join(statusPath, '000-zero.md'), ''),
@@ -176,24 +178,38 @@ describe('tracker filesystem discovery', () => {
     expect(await tracker.discoverTickets(project.name, status.name)).toEqual({
       entries: [
         {
-          id: 2,
+          id: 2n,
           name: '002-earlier',
           description: 'earlier',
           path: join(statusPath, '002-earlier.md'),
           status,
         },
         {
-          id: 10,
+          id: 10n,
           name: '010-later',
           description: 'later',
           path: join(statusPath, '010-later.md'),
           status,
         },
         {
-          id: 1000,
+          id: 1000n,
           name: '1000-large-id',
           description: 'large-id',
           path: join(statusPath, '1000-large-id.md'),
+          status,
+        },
+        {
+          id: 9007199254740992n,
+          name: '9007199254740992-larger-id',
+          description: 'larger-id',
+          path: join(statusPath, '9007199254740992-larger-id.md'),
+          status,
+        },
+        {
+          id: 9007199254740993n,
+          name: '9007199254740993-largest-id',
+          description: 'largest-id',
+          path: join(statusPath, '9007199254740993-largest-id.md'),
           status,
         },
       ],
