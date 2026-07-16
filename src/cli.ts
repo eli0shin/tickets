@@ -82,10 +82,17 @@ export function createProgram({
     .description('create a status in the selected project')
     .argument('<name>', 'normalized status name')
     .action(async (name) => {
-      const projectName = selectedProject(program.opts().project);
+      const globals = program.opts();
+      const workspace = workspaceFrom(globals.workspace);
+      const projectName = await selectedProject(
+        workspace,
+        cwd,
+        globals.project
+      );
       if (projectName === null) return;
-      const tracker = trackerFor(program.opts().workspace);
-      writeMutation(await createStatus(tracker, projectName, name));
+      writeMutation(
+        await createStatus(createTracker(workspace), projectName, name)
+      );
     });
 
   program
@@ -98,11 +105,16 @@ export function createProgram({
     .option('--parent <reference>', 'parent ticket reference')
     .option('--blocked-by <reference...>', 'one or more blocking references')
     .action(async (description, options) => {
-      const projectName = selectedProject(program.opts().project);
+      const globals = program.opts();
+      const workspace = workspaceFrom(globals.workspace);
+      const projectName = await selectedProject(
+        workspace,
+        cwd,
+        globals.project
+      );
       if (projectName === null) return;
-      const tracker = trackerFor(program.opts().workspace);
       writeMutation(
-        await createTicket(tracker, projectName, {
+        await createTicket(createTracker(workspace), projectName, {
           description,
           status: options.status,
           assignee: options.assign,
@@ -121,31 +133,9 @@ export function createProgram({
     .option('--json', 'emit JSON output')
     .action(async (options, command) => {
       const globals = command.optsWithGlobals();
-      const workspace = resolve(
-        globals.workspace ?? join(homedir(), '.local/state/tickets')
-      );
-      let repositoryFailure: DocumentDiagnostic | undefined;
-      const selection = await selectProject({
-        cwd,
-        explicitProject: globals.project,
-        loadProjects: async () => {
-          const repositories = await loadProjectRepositories(workspace);
-          if (repositories.ok) return repositories.value;
-          repositoryFailure = repositories.diagnostic;
-          return [];
-        },
-      });
-      if (repositoryFailure !== undefined) {
-        writeDiagnostic(repositoryFailure.message);
-        process.exitCode = 2;
-        return;
-      }
-      if (!selection.ok) {
-        writeDiagnostic(formatProjectSelectionFailure(selection));
-        process.exitCode = 2;
-        return;
-      }
-      const project = selection.project;
+      const workspace = workspaceFrom(globals.workspace);
+      const project = await selectedProject(workspace, cwd, globals.project);
+      if (project === null) return;
       const result = await lintProject(workspace, project);
       if (!result.ok) {
         writeDiagnostic(result.diagnostic.message);
@@ -213,17 +203,41 @@ async function loadProjectRepositories(
   return { ok: true, value: repositories };
 }
 
-function selectedProject(projectName: string | undefined): string | null {
-  if (projectName !== undefined) return projectName;
-  writeDiagnostic('Could not select a project; use --project <name>');
-  process.exitCode = 2;
-  return null;
+async function selectedProject(
+  workspace: string,
+  cwd: string,
+  explicitProject: string | undefined
+): Promise<string | null> {
+  let repositoryFailure: DocumentDiagnostic | undefined;
+  const selection = await selectProject({
+    cwd,
+    explicitProject,
+    loadProjects: async () => {
+      const repositories = await loadProjectRepositories(workspace);
+      if (repositories.ok) return repositories.value;
+      repositoryFailure = repositories.diagnostic;
+      return [];
+    },
+  });
+  if (repositoryFailure !== undefined) {
+    writeDiagnostic(repositoryFailure.message);
+    process.exitCode = 2;
+    return null;
+  }
+  if (!selection.ok) {
+    writeDiagnostic(formatProjectSelectionFailure(selection));
+    process.exitCode = 2;
+    return null;
+  }
+  return selection.project;
 }
 
 function trackerFor(workspace: string | undefined) {
-  return createTracker(
-    workspace ?? join(homedir(), '.local', 'state', 'tickets')
-  );
+  return createTracker(workspaceFrom(workspace));
+}
+
+function workspaceFrom(workspace: string | undefined): string {
+  return resolve(workspace ?? join(homedir(), '.local/state/tickets'));
 }
 
 export async function run(argv: string[] = process.argv): Promise<void> {

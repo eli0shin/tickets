@@ -12,6 +12,7 @@ import {
 import { basename, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createLintWorkspace } from './fixtures/lint-workspace.ts';
+import { createTicket as createTicketInternal } from '../src/tracker/internal/creation.ts';
 import {
   createTracker,
   isNormalizedName,
@@ -903,6 +904,49 @@ describe('tracker resource creation', () => {
       outcome.ok ? [outcome.value.id] : []
     );
     expect(ids.toSorted()).toEqual([1n, 2n]);
+  });
+
+  test('checks lock compromise before publication and preserves published success', async () => {
+    const workspaceRoot = await temporaryWorkspace();
+    const tracker = createTracker(workspaceRoot);
+    await tracker.createProject('release-project');
+
+    const published = await createTicketInternal(
+      workspaceRoot,
+      'release-project',
+      { description: 'published-before-release-failure' },
+      async (projectPath) => ({
+        ok: true,
+        value: {
+          path: join(projectPath, '.test-lock'),
+          release: () => Promise.reject(new Error('release failed')),
+          compromisedError: () => undefined,
+        },
+      })
+    );
+    expect(published.ok).toBe(true);
+    expect(
+      await readdir(join(workspaceRoot, 'release-project', 'todo'))
+    ).toEqual(['001-published-before-release-failure.md']);
+
+    await tracker.createProject('compromised-project');
+    const compromised = await createTicketInternal(
+      workspaceRoot,
+      'compromised-project',
+      { description: 'must-not-publish' },
+      async (projectPath) => ({
+        ok: true,
+        value: {
+          path: join(projectPath, '.test-lock'),
+          release: () => Promise.resolve().then(() => undefined),
+          compromisedError: () => new Error('lock compromised'),
+        },
+      })
+    );
+    expect(compromised.ok).toBe(false);
+    expect(
+      await readdir(join(workspaceRoot, 'compromised-project', 'todo'))
+    ).toEqual([]);
   });
 
   test('recovers a stale ticket creation lock after an interrupted process', async () => {

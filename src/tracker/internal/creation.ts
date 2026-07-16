@@ -119,7 +119,10 @@ export async function createStatus(
 export async function createTicket(
   workspaceRoot: string,
   projectName: string,
-  input: CreateTicketInput
+  input: CreateTicketInput,
+  acquireLock: (
+    projectPath: string
+  ) => Promise<Outcome<CreationLock>> = acquireCreationLock
 ): Promise<Outcome<Ticket>> {
   const validation = validateTicketInput(workspaceRoot, projectName, input);
   if (!validation.ok) return validation;
@@ -141,7 +144,7 @@ export async function createTicket(
   if (!projectValidation.ok) return projectValidation;
   const selectedStatus = input.status ?? projectValidation.value;
 
-  const lock = await acquireCreationLock(project.path);
+  const lock = await acquireLock(project.path);
   if (!lock.ok) return lock;
 
   return createTicketWithLockHeld(project, selectedStatus, input, lock.value);
@@ -159,9 +162,10 @@ async function createTicketWithLockHeld(
   input: CreateTicketInput,
   lock: CreationLock
 ): Promise<Outcome<Ticket>> {
-  return createTicketWhileLocked(project, selectedStatus, input).then(
+  return createTicketWhileLocked(project, selectedStatus, input, lock).then(
     async (result) => {
       const release = await releaseCreationLock(lock);
+      if (result.ok) return result;
       return release.ok ? result : release;
     },
     async (error: unknown) => {
@@ -251,7 +255,8 @@ async function acquireCreationLock(
 async function createTicketWhileLocked(
   project: Project,
   selectedStatus: string,
-  input: CreateTicketInput
+  input: CreateTicketInput,
+  lock: CreationLock
 ): Promise<Outcome<Ticket>> {
   const statuses = await discoverStatuses(project);
   const statusDiagnostic = statuses.diagnostics.at(0);
@@ -288,15 +293,24 @@ async function createTicketWhileLocked(
     path: join(status.path, `${name}.md`),
     status,
   } satisfies Ticket;
-  const write = await writeNewTrackerDocument(ticket.path, {
-    metadata: {
-      'Assigned-To': input.assignee ?? null,
-      Tags: [...(input.tags ?? [])],
-      Parent: input.parent ?? null,
-      'Blocked-By': [...(input.blockedBy ?? [])],
+  const write = await writeNewTrackerDocument(
+    ticket.path,
+    {
+      metadata: {
+        'Assigned-To': input.assignee ?? null,
+        Tags: [...(input.tags ?? [])],
+        Parent: input.parent ?? null,
+        'Blocked-By': [...(input.blockedBy ?? [])],
+      },
+      body: '',
     },
-    body: '',
-  });
+    () => {
+      const compromised = lock.compromisedError();
+      return compromised === undefined
+        ? { ok: true, value: undefined }
+        : filesystemFailure(lock.path, compromised);
+    }
+  );
   return write.ok ? { ok: true, value: ticket } : write;
 }
 

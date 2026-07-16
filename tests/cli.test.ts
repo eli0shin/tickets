@@ -796,6 +796,55 @@ describe('resource creation commands', () => {
     );
   });
 
+  test('discovers the project from Git for status and ticket creation', async () => {
+    const workspace = join(temporaryDirectory, 'discovered-creation');
+    const projectPath = join(workspace, 'discovered-project');
+    const repository = join(temporaryDirectory, 'creation-repository');
+    await run([
+      'bun',
+      'src/cli.ts',
+      '--workspace',
+      workspace,
+      'project',
+      'create',
+      'discovered-project',
+    ]);
+    await writeFile(
+      join(projectPath, 'project.md'),
+      '---\nDefault-Status: todo\nGit-Repo: https://example.com/owner/repo.git\n---\n'
+    );
+    await mkdir(repository);
+    expect(await run(['git', 'init'], { cwd: repository })).toMatchObject({
+      exitCode: 0,
+    });
+    expect(
+      await run(
+        ['git', 'remote', 'add', 'origin', 'git@example.com:owner/repo.git'],
+        { cwd: repository }
+      )
+    ).toMatchObject({ exitCode: 0 });
+
+    const cli = ['bun', resolve(repositoryRoot, 'src/cli.ts'), '--workspace'];
+    expect(
+      await run([...cli, workspace, 'status', 'create', 'review'], {
+        cwd: repository,
+      })
+    ).toEqual({
+      stdout: `${join(projectPath, 'review')}\n`,
+      stderr: '',
+      exitCode: 0,
+    });
+    expect(
+      await run([...cli, workspace, 'create', 'discovered-ticket'], {
+        cwd: repository,
+      })
+    ).toEqual({
+      stdout: `${join(projectPath, 'todo', '001-discovered-ticket.md')}\n`,
+      stderr: '',
+      exitCode: 0,
+    });
+  });
+
   test('creation failures emit no stdout and exit 2 without overwriting', async () => {
     const workspace = join(temporaryDirectory, 'create-failures');
     const command = [
@@ -823,17 +872,21 @@ describe('resource creation commands', () => {
     ).toBe(original);
 
     expect(
-      await run([
-        'bun',
-        'src/cli.ts',
-        '--workspace',
-        workspace,
-        'create',
-        'missing-selection',
-      ])
+      await run(
+        [
+          'bun',
+          resolve(repositoryRoot, 'src/cli.ts'),
+          '--workspace',
+          workspace,
+          'create',
+          'missing-selection',
+        ],
+        { cwd: temporaryDirectory }
+      )
     ).toEqual({
       stdout: '',
-      stderr: 'Could not select a project; use --project <name>\n',
+      stderr:
+        'Cannot discover a project: the current directory is not in a Git worktree; use --project.\n',
       exitCode: 2,
     });
 

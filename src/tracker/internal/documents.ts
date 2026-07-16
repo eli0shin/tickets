@@ -195,7 +195,11 @@ export async function writeTrackerDocument(
 
 export async function writeNewTrackerDocument(
   path: string,
-  document: TrackerDocument
+  document: TrackerDocument,
+  beforePublish: () => Outcome<undefined> = () => ({
+    ok: true,
+    value: undefined,
+  })
 ): Promise<Outcome<undefined>> {
   const serialization = serializeDocument(path, document);
   if (!serialization.ok) return serialization;
@@ -207,7 +211,8 @@ export async function writeNewTrackerDocument(
       path,
       temporaryPath,
       file,
-      serialization.value
+      serialization.value,
+      beforePublish
     );
   } catch (error) {
     return filesystemFailure(temporaryPath, error);
@@ -218,10 +223,17 @@ async function writeAndPublishNewDocument(
   path: string,
   temporaryPath: string,
   file: Awaited<ReturnType<typeof open>>,
-  source: string
+  source: string,
+  beforePublish: () => Outcome<undefined>
 ): Promise<Outcome<undefined>> {
   const write = await writeOwnedTemporary(path, temporaryPath, file, source);
   if (!write.ok) return write;
+
+  const permission = beforePublish();
+  if (!permission.ok) {
+    const cleanup = await unlinkOwnedTemporary(temporaryPath);
+    return cleanup.ok ? permission : cleanup;
+  }
 
   const publication = await publishOwnedTemporary(path, temporaryPath);
   if (publication.ok) {
