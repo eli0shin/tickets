@@ -60,7 +60,9 @@ export function createProgram({
 
   addReadOnlyCommands(program, selectProjectForCli, cwd);
 
-  const project = program.commands.find(({ name }) => name() === 'project');
+  const project = program.commands.find(
+    (command) => command.name() === 'project'
+  );
   if (project === undefined)
     throw new Error('Project command group is missing');
 
@@ -74,7 +76,9 @@ export function createProgram({
       writeMutation(await createProject(tracker, name, defaultStatus));
     });
 
-  const status = program.commands.find(({ name }) => name() === 'status');
+  const status = program.commands.find(
+    (command) => command.name() === 'status'
+  );
   if (status === undefined) throw new Error('Status command group is missing');
 
   status
