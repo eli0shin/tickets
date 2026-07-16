@@ -31,6 +31,12 @@ export type SelectProjectOptions = {
   loadProjects: () => Promise<readonly ProjectRepository[]>;
 };
 
+const repositoryOverrideVariables = new Set([
+  'GIT_COMMON_DIR',
+  'GIT_DIR',
+  'GIT_WORK_TREE',
+]);
+
 const defaultPorts = new Map([
   ['ftp', '21'],
   ['ftps', '990'],
@@ -205,8 +211,14 @@ type GitResult = { ok: true; stdout: string } | { ok: false; stderr: string };
 
 async function runGit(cwd: string, arguments_: string[]): Promise<GitResult> {
   return await new Promise((resolve) => {
+    const environment = Object.fromEntries(
+      Object.entries(process.env).filter(
+        ([name]) => !repositoryOverrideVariables.has(name)
+      )
+    );
+
     const child = spawn('git', ['-C', cwd, ...arguments_], {
-      env: { ...process.env, LC_ALL: 'C' },
+      env: { ...environment, LC_ALL: 'C' },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let stdout = '';

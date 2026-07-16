@@ -12,6 +12,9 @@ import { formatProjectSelectionFailure } from '../src/output.ts';
 
 let temporaryDirectory: string;
 let repository: string;
+const originalGitDirectory = process.env.GIT_DIR;
+const originalGitWorkTree = process.env.GIT_WORK_TREE;
+const originalGitCommonDirectory = process.env.GIT_COMMON_DIR;
 
 async function git(arguments_: string[], cwd = repository): Promise<string> {
   const process = Bun.spawn(['git', '-C', cwd, ...arguments_], {
@@ -31,6 +34,16 @@ async function setOrigin(remote: string): Promise<void> {
   await git(['remote', 'add', 'origin', remote]);
 }
 
+function restoreRepositoryEnvironment(): void {
+  if (originalGitDirectory === undefined) delete process.env.GIT_DIR;
+  else process.env.GIT_DIR = originalGitDirectory;
+  if (originalGitWorkTree === undefined) delete process.env.GIT_WORK_TREE;
+  else process.env.GIT_WORK_TREE = originalGitWorkTree;
+  if (originalGitCommonDirectory === undefined)
+    delete process.env.GIT_COMMON_DIR;
+  else process.env.GIT_COMMON_DIR = originalGitCommonDirectory;
+}
+
 beforeEach(async () => {
   temporaryDirectory = await mkdtemp(join(tmpdir(), 'tickets-git-'));
   repository = join(temporaryDirectory, 'worktree');
@@ -39,6 +52,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  restoreRepositoryEnvironment();
   await rm(temporaryDirectory, { force: true, recursive: true });
 });
 
@@ -133,6 +147,41 @@ describe('project selection', () => {
       ).toEqual({ ok: true, project: 'selected' });
     });
   }
+
+  test('ignores inherited repository overrides when inspecting the current worktree', async () => {
+    await setOrigin('https://example.com/current/repo.git');
+
+    const overriddenRepository = join(
+      temporaryDirectory,
+      'overridden-worktree'
+    );
+    await mkdir(overriddenRepository);
+    await git(['init'], overriddenRepository);
+    await git(
+      ['remote', 'add', 'origin', 'https://example.com/overridden/repo.git'],
+      overriddenRepository
+    );
+
+    process.env.GIT_DIR = join(overriddenRepository, '.git');
+    process.env.GIT_WORK_TREE = overriddenRepository;
+    process.env.GIT_COMMON_DIR = join(overriddenRepository, '.git');
+
+    expect(
+      await selectProject({
+        cwd: repository,
+        loadProjects: async () => [
+          {
+            name: 'overridden',
+            gitRepo: 'https://example.com/overridden/repo.git',
+          },
+          {
+            name: 'current',
+            gitRepo: 'https://example.com/current/repo.git',
+          },
+        ],
+      })
+    ).toEqual({ ok: true, project: 'current' });
+  });
 
   test('matches URI escapes with an equivalent literal SCP path', async () => {
     await setOrigin('https://example.com/Owner/R%C3%A9%70o.git');
