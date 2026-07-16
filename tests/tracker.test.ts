@@ -911,6 +911,39 @@ describe('tracker resource creation', () => {
     ]);
   });
 
+  test('serializes concurrent recovery of the same stale lock', async () => {
+    const workspaceRoot = await temporaryWorkspace();
+    const tracker = createTracker(workspaceRoot);
+    await tracker.createProject('alpha-project');
+    const lockPath = join(
+      workspaceRoot,
+      'alpha-project',
+      '.ticket-creation-lock'
+    );
+    await mkdir(lockPath);
+    const exitedProcess = Bun.spawn(['true']);
+    await exitedProcess.exited;
+    await writeFile(
+      join(lockPath, 'owner.json'),
+      `${JSON.stringify({ token: 'interrupted', pid: exitedProcess.pid })}\n`
+    );
+
+    const outcomes = await Promise.all([
+      tracker.createTicket('alpha-project', {
+        description: 'first-after-stale-lock',
+      }),
+      tracker.createTicket('alpha-project', {
+        description: 'second-after-stale-lock',
+      }),
+    ]);
+    expect(outcomes.every(({ ok }) => ok)).toBe(true);
+    expect(
+      outcomes
+        .flatMap((outcome) => (outcome.ok ? [outcome.value.id] : []))
+        .toSorted()
+    ).toEqual([1n, 2n]);
+  });
+
   test('does not expire a live creation lock based on age alone', async () => {
     const workspaceRoot = await temporaryWorkspace();
     const tracker = createTracker(workspaceRoot);

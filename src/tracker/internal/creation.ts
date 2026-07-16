@@ -230,8 +230,9 @@ async function acquireCreationLock(
         await removeIncompleteCreationLock(lock);
         return filesystemFailure(lock.path, error);
       }
-      const recovery = await removeStaleCreationLock(lock.path);
+      const recovery = await recoverStaleCreationLock(lock);
       if (!recovery.ok) return recovery;
+      if (recovery.value) return { ok: true, value: lock };
       await Bun.sleep(10);
     }
   }
@@ -253,22 +254,72 @@ async function removeIncompleteCreationLock(lock: CreationLock): Promise<void> {
   }
 }
 
-async function removeStaleCreationLock(
+async function recoverStaleCreationLock(
+  lock: CreationLock
+): Promise<Outcome<boolean>> {
+  const claimPath = `${lock.path}-recovery`;
+  const claim = await acquireRecoveryClaim(claimPath);
+  if (!claim.ok || !claim.value) return claim;
+
+  const recovery = await recoverStaleCreationLockWithClaim(lock);
+  try {
+    await rm(claimPath, { recursive: true });
+    return recovery;
+  } catch (error) {
+    return filesystemFailure(claimPath, error);
+  }
+}
+
+async function acquireRecoveryClaim(
+  claimPath: string
+): Promise<Outcome<boolean>> {
+  try {
+    await mkdir(claimPath);
+    return { ok: true, value: true };
+  } catch (error) {
+    return hasErrorCode(error, 'EEXIST')
+      ? { ok: true, value: false }
+      : filesystemFailure(claimPath, error);
+  }
+}
+
+async function recoverStaleCreationLockWithClaim(
+  lock: CreationLock
+): Promise<Outcome<boolean>> {
+  const stale = await creationLockIsStale(lock.path);
+  if (!stale.ok || !stale.value) return stale;
+
+  try {
+    await rm(lock.path, { recursive: true });
+    await mkdir(lock.path);
+    await writeFile(
+      lock.ownerPath,
+      `${JSON.stringify({ token: lock.token, pid: lock.pid })}\n`,
+      { encoding: 'utf8', flag: 'wx' }
+    );
+    return { ok: true, value: true };
+  } catch (error) {
+    if (hasErrorCode(error, 'EEXIST')) return { ok: true, value: false };
+    return filesystemFailure(lock.path, error);
+  }
+}
+
+async function creationLockIsStale(
   lockPath: string
-): Promise<Outcome<undefined>> {
+): Promise<Outcome<boolean>> {
   try {
     const ownerPath = join(lockPath, CREATION_LOCK_OWNER);
     const owner = await readCreationLockOwner(ownerPath);
     const ownership = await stat(owner === null ? lockPath : ownerPath);
     const recentlyActive =
       Date.now() - ownership.mtimeMs <= CREATION_LOCK_STALE_AFTER_MS;
-    if (recentlyActive && (owner === null || processIsRunning(owner.pid))) {
-      return { ok: true, value: undefined };
-    }
-    await rm(lockPath, { recursive: true });
-    return { ok: true, value: undefined };
+    return {
+      ok: true,
+      value:
+        !recentlyActive || (owner !== null && !processIsRunning(owner.pid)),
+    };
   } catch (error) {
-    if (hasErrorCode(error, 'ENOENT')) return { ok: true, value: undefined };
+    if (hasErrorCode(error, 'ENOENT')) return { ok: true, value: false };
     return filesystemFailure(lockPath, error);
   }
 }
