@@ -58,7 +58,7 @@ export function createProgram({
     .showSuggestionAfterError(false)
     .name('tickets')
     .description('Manage tickets in a local filesystem tracker')
-    .version(version, '-v, --version')
+    .version(version)
     .option(
       '--workspace <path>',
       'override the default ~/.local/state/tickets workspace'
