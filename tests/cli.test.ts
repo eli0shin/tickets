@@ -1,8 +1,9 @@
-import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
+import { afterAll, beforeAll, describe, expect, spyOn, test } from 'bun:test';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { version } from '../package.json';
+import { createProgram } from '../src/cli.ts';
 import { createLintWorkspace } from './fixtures/lint-workspace.ts';
 
 const repositoryRoot = join(import.meta.dir, '..');
@@ -15,15 +16,20 @@ const helpOutput = `Usage: tickets [options] [command]
 Manage tickets in a local filesystem tracker
 
 Options:
-  -v, --version       output the version number
-  --workspace <path>  override the default ~/.local/state/tickets workspace
-  --project <name>    select a project by name
-  -h, --help          display help for command
+  -v, --version            output the version number
+  --workspace <path>       override the default ~/.local/state/tickets workspace
+  --project <name>         select a project by name
+  -h, --help               display help for command
 
 Commands:
-  skill               manage agent skills
-  lint [options]      validate the selected project
-  help [command]      display help for command
+  project                  manage projects
+  status                   manage statuses
+  show <reference>         show a complete ticket document
+  list [options] <status>  list tickets in one status
+  search [options]         search tickets using structured criteria
+  skill                    manage agent skills
+  lint [options]           validate the selected project
+  help [command]           display help for command
 `;
 
 type ProcessResult = {
@@ -57,12 +63,48 @@ async function run(
   return { stdout, stderr, exitCode };
 }
 
+async function captureProcessOutput(action: () => Promise<void>): Promise<{
+  stdout: string;
+  stderr: string;
+  exitCode: typeof process.exitCode;
+}> {
+  let stdout = '';
+  let stderr = '';
+  const stdoutWrite = spyOn(process.stdout, 'write').mockImplementation(
+    (chunk) => {
+      stdout += String(chunk);
+      return true;
+    }
+  );
+  const stderrWrite = spyOn(process.stderr, 'write').mockImplementation(
+    (chunk) => {
+      stderr += String(chunk);
+      return true;
+    }
+  );
+  const previousExitCode = process.exitCode;
+
+  try {
+    await action();
+    return { stdout, stderr, exitCode: process.exitCode };
+  } finally {
+    stdoutWrite.mockRestore();
+    stderrWrite.mockRestore();
+    process.exitCode = previousExitCode;
+  }
+}
+
 function processEnv(): Record<string, string> {
   return Object.fromEntries(
     Object.entries(process.env).filter(
       (entry): entry is [string, string] => entry[1] !== undefined
     )
   );
+}
+
+async function git(cwd: string, arguments_: string[]): Promise<void> {
+  const result = await run(['git', '-C', cwd, ...arguments_]);
+  if (result.exitCode !== 0) throw new Error(result.stderr);
 }
 
 beforeAll(async () => {
@@ -277,6 +319,373 @@ test('lint reports selection failures only on stderr with exit status 2', async 
     stderr:
       'Cannot discover a project: the current directory is not in a Git worktree; use --project.\n',
     exitCode: 2,
+  });
+});
+
+describe('read-only commands', () => {
+  test('uses createProgram configured cwd for Git project selection', async () => {
+    const repository = await mkdtemp(
+      join(temporaryDirectory, 'read-configured-cwd-')
+    );
+    const workspace = join(repository, 'workspace');
+    const projectPath = join(workspace, 'configured-project');
+    const statusPath = join(projectPath, 'todo');
+    await mkdir(statusPath, { recursive: true });
+    await writeFile(
+      join(projectPath, 'project.md'),
+      '---\nDefault-Status: todo\nGit-Repo: https://configured.example/owner/repo.git\n---\n'
+    );
+    await git(repository, ['init']);
+    await git(repository, [
+      'remote',
+      'add',
+      'origin',
+      'https://configured.example/owner/repo.git',
+    ]);
+
+    const output = await captureProcessOutput(async () => {
+      await createProgram({ cwd: repository }).parseAsync([
+        'node',
+        'tickets',
+        '--workspace',
+        workspace,
+        'status',
+        'list',
+      ]);
+    });
+    expect(output).toEqual({
+      stdout: `todo\t${statusPath}\n`,
+      stderr: '',
+      exitCode: undefined,
+    });
+  });
+
+  test('discovers the selected project from a real Git origin', async () => {
+    const cwd = await mkdtemp(join(temporaryDirectory, 'read-git-selection-'));
+    const workspace = join(cwd, 'workspace');
+    const projectPath = join(workspace, 'alpha-project');
+    const todoPath = join(projectPath, 'todo');
+    const ticketPath = join(todoPath, '001-selected.md');
+    const ticketSource = '---\nTags: [selected]\n---\nSelected by Git\n';
+    await mkdir(todoPath, { recursive: true });
+    await mkdir(join(workspace, 'unrelated-project'));
+    await mkdir(join(workspace, 'malformed-project'));
+    await writeFile(
+      join(workspace, 'malformed-project', 'project.md'),
+      'not YAML front matter\n'
+    );
+    await writeFile(
+      join(projectPath, 'project.md'),
+      '---\nDefault-Status: todo\nGit-Repo: git@example.com:OWNER/REPO.git\n---\n'
+    );
+    await writeFile(ticketPath, ticketSource);
+    await git(cwd, ['init']);
+    await git(cwd, [
+      'remote',
+      'add',
+      'origin',
+      'https://example.com/owner/repo.git',
+    ]);
+
+    const base = [
+      'bun',
+      join(repositoryRoot, 'src/cli.ts'),
+      '--workspace',
+      workspace,
+    ];
+    expect(await run([...base, 'status', 'list'], { cwd })).toEqual({
+      stdout: `todo\t${todoPath}\n`,
+      stderr: '',
+      exitCode: 0,
+    });
+    expect(await run([...base, 'show', '001-selected'], { cwd })).toEqual({
+      stdout: ticketSource,
+      stderr: '',
+      exitCode: 0,
+    });
+    expect(await run([...base, 'list', 'todo'], { cwd })).toEqual({
+      stdout: `todo\t001-selected\t${ticketPath}\n`,
+      stderr: '',
+      exitCode: 0,
+    });
+    expect(
+      await run([...base, 'search', '--tag', 'selected'], { cwd })
+    ).toEqual({
+      stdout: `todo\t001-selected\t${ticketPath}\n`,
+      stderr: '',
+      exitCode: 0,
+    });
+  });
+
+  test('shows a cross-project reference without selecting a project', async () => {
+    const cwd = await mkdtemp(join(temporaryDirectory, 'read-cross-project-'));
+    const workspace = join(cwd, 'workspace');
+    const statusPath = join(workspace, 'beta-project', 'todo');
+    const ticketPath = join(statusPath, '001-cross-project.md');
+    const source = '---\nTags: []\n---\nCross project\n';
+    await mkdir(statusPath, { recursive: true });
+    await writeFile(ticketPath, source);
+    const base = [
+      'bun',
+      join(repositoryRoot, 'src/cli.ts'),
+      '--workspace',
+      workspace,
+      'show',
+    ];
+
+    expect(
+      await run([...base, 'beta-project/001-cross-project'], { cwd })
+    ).toEqual({ stdout: source, stderr: '', exitCode: 0 });
+    expect(await run([...base, 'BAD'], { cwd })).toEqual({
+      stdout: '',
+      stderr: 'Invalid ticket reference: BAD\n',
+      exitCode: 2,
+    });
+  });
+
+  test('lists projects and statuses in plain text and JSON from an isolated workspace', async () => {
+    const cwd = await mkdtemp(join(temporaryDirectory, 'read-listings-'));
+    const workspace = join(cwd, 'workspace');
+    const projectPath = join(workspace, 'alpha-project');
+    await mkdir(join(projectPath, 'todo'), { recursive: true });
+    await mkdir(join(projectPath, 'done'));
+
+    expect(
+      await run(
+        [
+          'bun',
+          join(repositoryRoot, 'src/cli.ts'),
+          '--workspace',
+          workspace,
+          'project',
+          'list',
+        ],
+        { cwd }
+      )
+    ).toEqual({
+      stdout: `alpha-project\t${projectPath}\n`,
+      stderr: '',
+      exitCode: 0,
+    });
+    expect(
+      await run(
+        [
+          'bun',
+          join(repositoryRoot, 'src/cli.ts'),
+          '--workspace',
+          workspace,
+          'project',
+          'list',
+          '--json',
+        ],
+        { cwd }
+      )
+    ).toEqual({
+      stdout: `${JSON.stringify(
+        { projects: [{ name: 'alpha-project', path: projectPath }] },
+        null,
+        2
+      )}\n`,
+      stderr: '',
+      exitCode: 0,
+    });
+    const statusCommand = [
+      'bun',
+      join(repositoryRoot, 'src/cli.ts'),
+      '--workspace',
+      workspace,
+      '--project',
+      'alpha-project',
+      'status',
+      'list',
+    ];
+    expect(await run(statusCommand, { cwd })).toEqual({
+      stdout: `done\t${join(projectPath, 'done')}\ntodo\t${join(projectPath, 'todo')}\n`,
+      stderr: '',
+      exitCode: 0,
+    });
+    expect(await run([...statusCommand, '--json'], { cwd })).toEqual({
+      stdout: `${JSON.stringify(
+        {
+          project: 'alpha-project',
+          statuses: [
+            { name: 'done', path: join(projectPath, 'done') },
+            { name: 'todo', path: join(projectPath, 'todo') },
+          ],
+        },
+        null,
+        2
+      )}\n`,
+      stderr: '',
+      exitCode: 0,
+    });
+  });
+
+  test('shows, lists, and searches tickets with exact plain and JSON output', async () => {
+    const cwd = await mkdtemp(join(temporaryDirectory, 'read-tickets-'));
+    const workspace = join(cwd, 'workspace');
+    const projectPath = join(workspace, 'alpha-project');
+    const todoPath = join(projectPath, 'todo');
+    const donePath = join(projectPath, 'done');
+    const firstPath = join(todoPath, '010-first.md');
+    const secondPath = join(donePath, '002-second.md');
+    const firstSource =
+      '---\nAssigned-To: pi\nTags: [task, urgent]\nParent: 001-parent\nBlocked-By: [002-blocker]\n---\n# First\n';
+    await mkdir(todoPath, { recursive: true });
+    await mkdir(donePath);
+    await writeFile(firstPath, firstSource);
+    await writeFile(
+      secondPath,
+      '---\nAssigned-To:\nTags: []\nParent:\nBlocked-By: []\n---\n'
+    );
+    const base = [
+      'bun',
+      join(repositoryRoot, 'src/cli.ts'),
+      '--workspace',
+      workspace,
+      '--project',
+      'alpha-project',
+    ];
+
+    expect(await run([...base, 'show', '010-first'], { cwd })).toEqual({
+      stdout: firstSource,
+      stderr: '',
+      exitCode: 0,
+    });
+    expect(await run([...base, 'list', 'todo'], { cwd })).toEqual({
+      stdout: `todo\t010-first\t${firstPath}\n`,
+      stderr: '',
+      exitCode: 0,
+    });
+    expect(await run([...base, 'list', 'todo', '--json'], { cwd })).toEqual({
+      stdout: `${JSON.stringify(
+        {
+          project: 'alpha-project',
+          tickets: [
+            {
+              name: '010-first',
+              status: 'todo',
+              path: firstPath,
+              assignedTo: 'pi',
+              tags: ['task', 'urgent'],
+              parent: '001-parent',
+              blockedBy: ['002-blocker'],
+            },
+          ],
+        },
+        null,
+        2
+      )}\n`,
+      stderr: '',
+      exitCode: 0,
+    });
+    expect(
+      await run(
+        [
+          ...base,
+          'search',
+          '--tag',
+          'task',
+          '--tag',
+          'urgent',
+          '--assigned-to',
+          'pi',
+          '--blocked-by',
+          '002-blocker',
+          '--json',
+        ],
+        { cwd }
+      )
+    ).toEqual({
+      stdout: `${JSON.stringify(
+        {
+          project: 'alpha-project',
+          tickets: [
+            {
+              name: '010-first',
+              status: 'todo',
+              path: firstPath,
+              assignedTo: 'pi',
+              tags: ['task', 'urgent'],
+              parent: '001-parent',
+              blockedBy: ['002-blocker'],
+            },
+          ],
+        },
+        null,
+        2
+      )}\n`,
+      stderr: '',
+      exitCode: 0,
+    });
+    expect(
+      await run([...base, 'search', '--status', 'missing'], { cwd })
+    ).toEqual({ stdout: '', stderr: '', exitCode: 0 });
+    for (const repeated of [
+      ['--status', 'todo', '--status', 'done'],
+      ['--assigned-to', 'pi', '--assigned-to', 'someone-else'],
+      ['--parent', '001-parent', '--parent', '002-other'],
+    ]) {
+      expect(await run([...base, 'search', ...repeated], { cwd })).toEqual({
+        stdout: '',
+        stderr: '',
+        exitCode: 0,
+      });
+    }
+    expect(
+      await run([...base, 'search', '--unassigned', '--unblocked'], { cwd })
+    ).toEqual({
+      stdout: `done\t002-second\t${secondPath}\n`,
+      stderr: '',
+      exitCode: 0,
+    });
+  });
+
+  test('retains partial output, reports malformed files, and rejects conflicting criteria', async () => {
+    const cwd = await mkdtemp(join(temporaryDirectory, 'read-partial-'));
+    const workspace = join(cwd, 'workspace');
+    const statusPath = join(workspace, 'alpha-project', 'todo');
+    const validPath = join(statusPath, '001-valid.md');
+    const malformedPath = join(statusPath, '002-malformed.md');
+    await mkdir(statusPath, { recursive: true });
+    await writeFile(validPath, '---\nTags: []\n---\n');
+    await writeFile(malformedPath, '---\nTags: [broken\n---\n');
+    const base = [
+      'bun',
+      join(repositoryRoot, 'src/cli.ts'),
+      '--workspace',
+      workspace,
+      '--project',
+      'alpha-project',
+    ];
+
+    const malformedDiagnostic = `${malformedPath}\tFlow sequence in block collection must be sufficiently indented and end with a ]\n`;
+    expect(await run([...base, 'list', 'todo'], { cwd })).toEqual({
+      stdout: `todo\t001-valid\t${validPath}\n`,
+      stderr: malformedDiagnostic,
+      exitCode: 2,
+    });
+    expect(
+      await run([...base, 'search', '--status', 'done', '--json'], { cwd })
+    ).toEqual({
+      stdout: `${JSON.stringify(
+        { project: 'alpha-project', tickets: [] },
+        null,
+        2
+      )}\n`,
+      stderr: malformedDiagnostic,
+      exitCode: 2,
+    });
+
+    expect(
+      await run([...base, 'search', '--assigned-to', 'pi', '--unassigned'], {
+        cwd,
+      })
+    ).toEqual({
+      stdout: '',
+      stderr: '--assigned-to and --unassigned cannot be used together\n',
+      exitCode: 2,
+    });
   });
 });
 

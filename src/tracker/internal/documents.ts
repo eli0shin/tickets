@@ -21,6 +21,8 @@ export type DocumentDiagnosticCode =
   | 'duplicate-ticket-key'
   | 'filesystem-error'
   | 'invalid-name'
+  | 'invalid-ticket-metadata'
+  | 'not-found'
   | 'malformed-project-yaml'
   | 'malformed-ticket-yaml'
   | 'serialization-error';

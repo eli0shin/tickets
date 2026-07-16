@@ -5,6 +5,7 @@ import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { version } from '../package.json';
 import { lintProject } from './commands/lint.ts';
+import { addReadOnlyCommands } from './commands/read.ts';
 import {
   selectProject,
   type ProjectRepository,
@@ -50,6 +51,8 @@ export function createProgram({
       'override the default ~/.local/state/tickets workspace'
     )
     .option('--project <name>', 'select a project by name');
+
+  addReadOnlyCommands(program, selectProjectForCli, cwd);
 
   const skill = program.command('skill').description('manage agent skills');
 
