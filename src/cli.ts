@@ -1,13 +1,16 @@
 #!/usr/bin/env bun
 import { Command } from '@commander-js/extra-typings';
 import { CommanderError } from 'commander';
+import { homedir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { version } from '../package.json';
+import { lintProject } from './commands/lint.ts';
 import {
   selectProject,
   type ProjectRepository,
   type ProjectSelection,
 } from './git.ts';
-import { writeDiagnostic, writeSuccess } from './output.ts';
+import { writeDiagnostic, writeLint, writeSuccess } from './output.ts';
 import {
   confirmOverwrite,
   installSkill,
@@ -42,6 +45,31 @@ export function createProgram({
     .option('--project <name>', 'select a project by name');
 
   const skill = program.command('skill').description('manage agent skills');
+
+  program
+    .command('lint')
+    .description('validate the selected project')
+    .option('--json', 'emit JSON output')
+    .action(async (options, command) => {
+      const globals = command.optsWithGlobals();
+      const project = globals.project;
+      if (project === undefined) {
+        writeDiagnostic('Could not select a project; use --project');
+        process.exitCode = 2;
+        return;
+      }
+      const workspace = resolve(
+        globals.workspace ?? join(homedir(), '.local/state/tickets')
+      );
+      const result = await lintProject(workspace, project);
+      if (!result.ok) {
+        writeDiagnostic(result.diagnostic.message);
+        process.exitCode = 2;
+        return;
+      }
+      writeLint(project, result.violations, options.json ?? false);
+      if (result.violations.length > 0) process.exitCode = 1;
+    });
 
   skill
     .command('install')

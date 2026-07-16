@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { version } from '../package.json';
+import { createLintWorkspace } from './fixtures/lint-workspace.ts';
 
 const repositoryRoot = join(import.meta.dir, '..');
 const assetPath = join(repositoryRoot, 'assets/tickets/SKILL.md');
@@ -21,6 +22,7 @@ Options:
 
 Commands:
   skill               manage agent skills
+  lint [options]      validate the selected project
   help [command]      display help for command
 `;
 
@@ -149,6 +151,95 @@ describe.each([
       exitCode: 0,
     });
     expect(await readFile(installedPath)).toEqual(await readFile(assetPath));
+  });
+});
+
+test('lint covers every finding code and a clean JSON run through the CLI', async () => {
+  const workspace = join(temporaryDirectory, 'lint-workspace');
+  const cases = await createLintWorkspace(workspace);
+  let observedCodes = new Set<string>();
+  const outputs = new Map<string, string>();
+
+  for (const lintCase of cases) {
+    const result = await run([
+      'bun',
+      'src/cli.ts',
+      '--workspace',
+      workspace,
+      '--project',
+      lintCase.project,
+      'lint',
+    ]);
+    outputs.set(lintCase.project, result.stdout);
+    expect(result.stderr).toBe('');
+    expect(result.exitCode).toBe(lintCase.codes.length === 0 ? 0 : 1);
+    const codes = result.stdout
+      .trim()
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => line.split('\t')[1]);
+    observedCodes = new Set([...observedCodes, ...codes]);
+    expect(codes.toSorted()).toEqual([...lintCase.codes].toSorted());
+  }
+
+  expect(outputs.get('invalid-default')).toBe(
+    `${join(workspace, 'invalid-default', 'project.md')}\tinvalid-default-status\tDefault-Status must be one normalized status name\n`
+  );
+  expect(observedCodes.size).toBe(19);
+  expect(
+    await run([
+      'bun',
+      'src/cli.ts',
+      '--workspace',
+      workspace,
+      '--project',
+      'clean-project',
+      'lint',
+      '--json',
+    ])
+  ).toEqual({
+    stdout: '{\n  "project": "clean-project",\n  "violations": []\n}\n',
+    stderr: '',
+    exitCode: 0,
+  });
+
+  const invalidDefaultPath = join(workspace, 'invalid-default', 'project.md');
+  expect(
+    await run([
+      'bun',
+      'src/cli.ts',
+      '--workspace',
+      workspace,
+      '--project',
+      'invalid-default',
+      'lint',
+      '--json',
+    ])
+  ).toEqual({
+    stdout: `${JSON.stringify(
+      {
+        project: 'invalid-default',
+        violations: [
+          {
+            path: invalidDefaultPath,
+            code: 'invalid-default-status',
+            message: 'Default-Status must be one normalized status name',
+          },
+        ],
+      },
+      null,
+      2
+    )}\n`,
+    stderr: '',
+    exitCode: 1,
+  });
+}, 20_000);
+
+test('lint reports selection failures only on stderr with exit status 2', async () => {
+  expect(await run(['bun', 'src/cli.ts', 'lint'])).toEqual({
+    stdout: '',
+    stderr: 'Could not select a project; use --project\n',
+    exitCode: 2,
   });
 });
 

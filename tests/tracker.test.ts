@@ -2,6 +2,7 @@ import { afterEach, describe, expect, spyOn, test } from 'bun:test';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { createLintWorkspace } from './fixtures/lint-workspace.ts';
 import {
   createTracker,
   isNormalizedName,
@@ -257,6 +258,89 @@ describe('tracker filesystem discovery', () => {
     expect(outcome.diagnostics[0]?.path).toBe(workspaceRoot);
     expect(outcome.diagnostics[0]?.code).toBe('filesystem-error');
     expect(outcome.diagnostics[0]?.message.includes('ENOENT')).toBe(true);
+  });
+});
+
+describe('tracker project lint', () => {
+  test('reports the exact violation catalog through real workspace files', async () => {
+    const workspaceRoot = await temporaryWorkspace();
+    const cases = await createLintWorkspace(workspaceRoot);
+    const tracker = createTracker(workspaceRoot);
+    let observedCodes = new Set<string>();
+    const preservedPaths = [
+      join(workspaceRoot, 'clean-project', 'todo', '001-clean.md'),
+      join(workspaceRoot, 'ticket-errors', 'todo', '003-malformed.md'),
+    ];
+    const before = await Promise.all(
+      preservedPaths.map((path) => readFile(path, 'utf8'))
+    );
+
+    for (const lintCase of cases) {
+      const result = await tracker.lintProject(lintCase.project);
+      expect(result.ok).toBe(true);
+      if (!result.ok) throw new Error(result.diagnostic.message);
+      const actualCodes = result.violations.map((violation) => violation.code);
+      observedCodes = new Set([...observedCodes, ...actualCodes]);
+      expect(actualCodes.toSorted()).toEqual([...lintCase.codes].toSorted());
+      expect(
+        result.violations.every((violation) =>
+          violation.path.startsWith(join(workspaceRoot, lintCase.project))
+        )
+      ).toBe(true);
+      expect(result.violations).toEqual(
+        result.violations.toSorted(
+          (left, right) =>
+            left.path.localeCompare(right.path) ||
+            left.code.localeCompare(right.code) ||
+            left.message.localeCompare(right.message)
+        )
+      );
+    }
+
+    expect(
+      await Promise.all(preservedPaths.map((path) => readFile(path, 'utf8')))
+    ).toEqual(before);
+    expect([...observedCodes].toSorted()).toEqual(
+      [
+        'unexpected-project-entry',
+        'unexpected-status-entry',
+        'missing-project-metadata',
+        'malformed-project-yaml',
+        'duplicate-project-key',
+        'missing-default-status',
+        'invalid-default-status',
+        'missing-default-status-directory',
+        'invalid-git-repo',
+        'malformed-ticket-yaml',
+        'duplicate-ticket-key',
+        'invalid-assigned-to',
+        'invalid-tags',
+        'invalid-parent',
+        'invalid-blocked-by',
+        'duplicate-ticket-id',
+        'broken-parent-reference',
+        'broken-blocker-reference',
+        'duplicate-git-repo',
+      ].toSorted()
+    );
+  });
+
+  test('returns invocation and filesystem failures outside the finding catalog', async () => {
+    const workspaceRoot = await temporaryWorkspace();
+    const tracker = createTracker(workspaceRoot);
+
+    expect(await tracker.lintProject('../outside')).toEqual({
+      ok: false,
+      diagnostic: {
+        path: workspaceRoot,
+        code: 'invalid-name',
+        message: 'Invalid project name: ../outside',
+      },
+    });
+    const missing = await tracker.lintProject('missing-project');
+    expect(missing.ok).toBe(false);
+    if (missing.ok) throw new Error('Expected a filesystem failure');
+    expect(missing.diagnostic.code).toBe('filesystem-error');
   });
 });
 
