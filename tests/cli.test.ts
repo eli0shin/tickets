@@ -1,8 +1,9 @@
-import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
+import { afterAll, beforeAll, describe, expect, spyOn, test } from 'bun:test';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { version } from '../package.json';
+import { createProgram } from '../src/cli.ts';
 import { createLintWorkspace } from './fixtures/lint-workspace.ts';
 
 const repositoryRoot = join(import.meta.dir, '..');
@@ -60,6 +61,37 @@ async function run(
   ]);
 
   return { stdout, stderr, exitCode };
+}
+
+async function captureProcessOutput(action: () => Promise<void>): Promise<{
+  stdout: string;
+  stderr: string;
+  exitCode: typeof process.exitCode;
+}> {
+  let stdout = '';
+  let stderr = '';
+  const stdoutWrite = spyOn(process.stdout, 'write').mockImplementation(
+    (chunk) => {
+      stdout += String(chunk);
+      return true;
+    }
+  );
+  const stderrWrite = spyOn(process.stderr, 'write').mockImplementation(
+    (chunk) => {
+      stderr += String(chunk);
+      return true;
+    }
+  );
+  const previousExitCode = process.exitCode;
+
+  try {
+    await action();
+    return { stdout, stderr, exitCode: process.exitCode };
+  } finally {
+    stdoutWrite.mockRestore();
+    stderrWrite.mockRestore();
+    process.exitCode = previousExitCode;
+  }
 }
 
 function processEnv(): Record<string, string> {
@@ -291,6 +323,43 @@ test('lint reports selection failures only on stderr with exit status 2', async 
 });
 
 describe('read-only commands', () => {
+  test('uses createProgram configured cwd for Git project selection', async () => {
+    const repository = await mkdtemp(
+      join(temporaryDirectory, 'read-configured-cwd-')
+    );
+    const workspace = join(repository, 'workspace');
+    const projectPath = join(workspace, 'configured-project');
+    const statusPath = join(projectPath, 'todo');
+    await mkdir(statusPath, { recursive: true });
+    await writeFile(
+      join(projectPath, 'project.md'),
+      '---\nDefault-Status: todo\nGit-Repo: https://configured.example/owner/repo.git\n---\n'
+    );
+    await git(repository, ['init']);
+    await git(repository, [
+      'remote',
+      'add',
+      'origin',
+      'https://configured.example/owner/repo.git',
+    ]);
+
+    const output = await captureProcessOutput(async () => {
+      await createProgram({ cwd: repository }).parseAsync([
+        'node',
+        'tickets',
+        '--workspace',
+        workspace,
+        'status',
+        'list',
+      ]);
+    });
+    expect(output).toEqual({
+      stdout: `todo\t${statusPath}\n`,
+      stderr: '',
+      exitCode: undefined,
+    });
+  });
+
   test('discovers the selected project from a real Git origin', async () => {
     const cwd = await mkdtemp(join(temporaryDirectory, 'read-git-selection-'));
     const workspace = join(cwd, 'workspace');

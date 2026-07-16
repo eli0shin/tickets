@@ -93,13 +93,12 @@ function ticketMetadata(
       readonly value: Omit<TicketSummary, 'id' | 'name' | 'status' | 'path'>;
     }
   | { readonly ok: false; readonly diagnostic: DocumentDiagnostic } {
-  const assignedTo = metadata['Assigned-To'];
+  const assignedTo = optionalString(metadata['Assigned-To']);
   const tags = stringArray(metadata.Tags, isNormalizedName);
-  const parent = metadata.Parent;
+  const parent = optionalString(metadata.Parent);
   const blockedBy = stringArray(metadata['Blocked-By'], isTicketReference);
 
   if (
-    assignedTo !== undefined &&
     assignedTo !== null &&
     (typeof assignedTo !== 'string' || !isNormalizedName(assignedTo))
   ) {
@@ -109,7 +108,6 @@ function ticketMetadata(
     return invalidMetadata(ticket, 'Tags');
   }
   if (
-    parent !== undefined &&
     parent !== null &&
     (typeof parent !== 'string' || !isTicketReference(parent))
   ) {
@@ -121,13 +119,12 @@ function ticketMetadata(
 
   return {
     ok: true,
-    value: {
-      assignedTo: typeof assignedTo === 'string' ? assignedTo : null,
-      tags,
-      parent: typeof parent === 'string' ? parent : null,
-      blockedBy,
-    },
+    value: { assignedTo, tags, parent, blockedBy },
   };
+}
+
+function optionalString(value: unknown): unknown {
+  return value === undefined || value === null || value === '' ? null : value;
 }
 
 function stringArray(

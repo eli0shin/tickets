@@ -41,7 +41,8 @@ type SelectedTracker = {
 
 export function addReadOnlyCommands(
   program: RootCommand,
-  selectProject: SelectProjectForCli
+  selectProject: SelectProjectForCli,
+  cwd: string
 ): void {
   const project = program.command('project').description('manage projects');
   project
@@ -64,7 +65,7 @@ export function addReadOnlyCommands(
     .description('list statuses')
     .option('--json', 'emit JSON output')
     .action(async (options: { json?: boolean }) => {
-      const selected = await selectedTracker(program, selectProject);
+      const selected = await selectedTracker(program, selectProject, cwd);
       if (selected === null) return;
       const result = await selected.tracker.discoverStatuses(selected.project);
       if (result.diagnostics.length > 0) {
@@ -83,7 +84,7 @@ export function addReadOnlyCommands(
       const projectSeparator = reference.indexOf('/');
       const selected =
         projectSeparator === -1
-          ? await selectedTracker(program, selectProject)
+          ? await selectedTracker(program, selectProject, cwd)
           : {
               project: reference.slice(0, projectSeparator),
               tracker: trackerFor(program),
@@ -107,7 +108,7 @@ export function addReadOnlyCommands(
     .option('--json', 'emit JSON output')
     .action(async (statusName: string, options: { json?: boolean }) => {
       if (!validName('status', statusName)) return;
-      const selected = await selectedTracker(program, selectProject);
+      const selected = await selectedTracker(program, selectProject, cwd);
       if (selected === null) return;
       const result = await selected.tracker.listTickets(
         selected.project,
@@ -154,7 +155,7 @@ export function addReadOnlyCommands(
           return;
         }
         if (!validCriteria(options)) return;
-        const selected = await selectedTracker(program, selectProject);
+        const selected = await selectedTracker(program, selectProject, cwd);
         if (selected === null) return;
         const criteria = {
           statuses: nonEmpty(options.status),
@@ -243,7 +244,8 @@ function trackerFor(program: RootCommand) {
 
 async function selectedTracker(
   program: RootCommand,
-  selectProject: SelectProjectForCli
+  selectProject: SelectProjectForCli,
+  cwd: string
 ): Promise<SelectedTracker | null> {
   const tracker = trackerFor(program);
   const explicitProject = program.opts().project;
@@ -252,7 +254,7 @@ async function selectedTracker(
   }
 
   const selection = await selectProjectSafely(selectProject, {
-    cwd: process.cwd(),
+    cwd,
     explicitProject,
     loadProjects: () => loadProjectRepositories(tracker),
   });

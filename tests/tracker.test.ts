@@ -404,6 +404,45 @@ describe('tracker project lint', () => {
 });
 
 describe('tracker read-only queries', () => {
+  test('treats lint-clean quoted empty assignment and parent as absent', async () => {
+    const workspaceRoot = await temporaryWorkspace();
+    const projectPath = join(workspaceRoot, 'alpha-project');
+    const statusPath = join(projectPath, 'todo');
+    const ticketPath = join(statusPath, '001-empty-values.md');
+    await mkdir(statusPath, { recursive: true });
+    await writeFile(
+      join(projectPath, 'project.md'),
+      '---\nDefault-Status: todo\nGit-Repo:\n---\n'
+    );
+    await writeFile(
+      ticketPath,
+      '---\nAssigned-To: ""\nTags: []\nParent: ""\nBlocked-By: []\n---\n'
+    );
+
+    const tracker = createTracker(workspaceRoot);
+    expect(await tracker.lintProject('alpha-project')).toEqual({
+      ok: true,
+      violations: [],
+    });
+    expect(await tracker.listTickets('alpha-project', 'todo')).toEqual({
+      project: 'alpha-project',
+      tickets: [
+        {
+          id: 1n,
+          name: '001-empty-values',
+          status: 'todo',
+          path: ticketPath,
+          assignedTo: null,
+          tags: [],
+          parent: null,
+          blockedBy: [],
+        },
+      ],
+      diagnostics: [],
+      fatal: false,
+    });
+  });
+
   test('lists and searches real ticket files with defaults, AND criteria, and ID ordering', async () => {
     const workspaceRoot = await temporaryWorkspace();
     const projectPath = join(workspaceRoot, 'alpha-project');
