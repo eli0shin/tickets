@@ -19,6 +19,10 @@ export function getBinaryName(p: Platform, a: Architecture): string {
   return `tickets-${p}-${a}`;
 }
 
+export function getTicketsExecutablePath(): string | undefined {
+  return Bun.main.startsWith('/$bunfs/') ? process.execPath : undefined;
+}
+
 export function isPrerelease(version: string): boolean {
   return version.includes('-');
 }

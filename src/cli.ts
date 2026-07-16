@@ -65,6 +65,7 @@ import {
 } from './tracker/index.ts';
 import type { ConfirmOverwrite } from './skill.ts';
 import type { CommandOutcome, UpdateBehavior } from './types.ts';
+import { getTicketsExecutablePath } from './update.ts';
 import { runUpdaterWorker } from './updater-worker.ts';
 
 type GlobalOptions = {
@@ -108,7 +109,7 @@ export function createProgram({
   update,
   interactive = Boolean(process.stdin.isTTY && process.stderr.isTTY),
   cwd = process.cwd(),
-  executablePath = process.execPath,
+  executablePath = getTicketsExecutablePath(),
   currentVersion = version,
   updateMessage,
 }: CliDependencies = {}): RootCommand {
@@ -538,21 +539,26 @@ export async function run(
   argv: string[] = process.argv,
   dependencies: CliDependencies = {}
 ): Promise<void> {
+  const executablePath = getTicketsExecutablePath();
   if (argv[2] === '--update-worker') {
-    await runUpdaterWorker();
+    if (executablePath !== undefined) await runUpdaterWorker();
     return;
   }
 
   const updateConfig = await getUpdateConfigFromFile();
-  const autoUpdateResult = await handleAutoUpdate(
-    version,
-    updateConfig.behavior,
-    updateConfig.checkIntervalHours
-  ).catch(() => ({ message: undefined }));
+  const autoUpdateResult =
+    executablePath === undefined
+      ? { message: undefined }
+      : await handleAutoUpdate(
+          version,
+          updateConfig.behavior,
+          updateConfig.checkIntervalHours
+        ).catch(() => ({ message: undefined }));
 
   try {
     await createProgram({
       ...dependencies,
+      executablePath: dependencies.executablePath ?? executablePath,
       updateMessage: dependencies.updateMessage ?? autoUpdateResult.message,
     }).parseAsync(argv);
   } catch (error) {

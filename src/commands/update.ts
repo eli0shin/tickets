@@ -23,9 +23,16 @@ const defaultDependencies = {
 
 export async function updateCommand(
   version: string,
-  binaryPath: string,
+  binaryPath: string | undefined,
   dependencies: UpdateDependencies = defaultDependencies
 ): Promise<UpdateCommandOutcome> {
+  if (binaryPath === undefined) {
+    return failure(
+      [],
+      'Cannot update from a source invocation; use the compiled Tickets executable'
+    );
+  }
+
   const messages = [`Current version: ${version}`, 'Checking for updates...'];
 
   const releaseResult = await dependencies.fetchLatestVersion();

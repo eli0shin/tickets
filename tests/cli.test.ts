@@ -20,6 +20,7 @@ const assetPath = join(repositoryRoot, 'assets/tickets/SKILL.md');
 let temporaryDirectory: string;
 let executablePath: string;
 let interactiveExecutablePath: string;
+let updateExecutableProbePath: string;
 
 const helpOutput = `Usage: tickets [options] [command]
 
@@ -254,6 +255,7 @@ beforeAll(async () => {
   temporaryDirectory = await mkdtemp(join(tmpdir(), 'tickets-packaging-'));
   executablePath = join(temporaryDirectory, 'tickets');
   interactiveExecutablePath = join(temporaryDirectory, 'tickets-interactive');
+  updateExecutableProbePath = join(temporaryDirectory, 'update-executable');
   const configDirectory = join(temporaryDirectory, 'config-home/tickets');
   await mkdir(configDirectory, { recursive: true });
   await writeFile(
@@ -264,6 +266,7 @@ beforeAll(async () => {
   for (const [source, output] of [
     ['src/cli.ts', executablePath],
     ['tests/fixtures/interactive-cli.ts', interactiveExecutablePath],
+    ['tests/fixtures/update-executable.ts', updateExecutableProbePath],
   ]) {
     const result = await run([
       'bun',
@@ -289,6 +292,23 @@ test('output.ts is the sole source output boundary', async () => {
   expect(await sourceFilesMatching(/from 'node:readline\/promises'/u)).toEqual([
     'src/output.ts',
   ]);
+});
+
+test('compiled runtime resolves its own executable path', async () => {
+  expect(await run([updateExecutableProbePath])).toEqual({
+    stdout: `${updateExecutableProbePath}\n`,
+    stderr: '',
+    exitCode: 0,
+  });
+});
+
+test('source update refuses to replace the Bun runtime', async () => {
+  expect(await run(['bun', 'src/cli.ts', 'update'])).toEqual({
+    stdout: '',
+    stderr:
+      'Cannot update from a source invocation; use the compiled Tickets executable\n',
+    exitCode: 2,
+  });
 });
 
 describe.each([

@@ -18,6 +18,7 @@ import {
   downloadBinary,
   fetchLatestVersion,
   getBinaryName,
+  getTicketsExecutablePath,
   isNewerVersion,
   replaceBinary,
 } from '../src/update.ts';
@@ -81,6 +82,12 @@ describe('native artifact selection', () => {
   });
 });
 
+describe('runtime executable selection', () => {
+  test('does not treat the Bun runtime as the Tickets executable', () => {
+    expect(getTicketsExecutablePath()).toBeUndefined();
+  });
+});
+
 describe('version comparison', () => {
   test('compares major, minor, and patch versions', () => {
     expect([
@@ -128,6 +135,35 @@ describe('release and download diagnostics', () => {
 });
 
 describe('update command', () => {
+  test('rejects source invocations before checking for releases', async () => {
+    const fetchRelease = mock(async () => ({
+      success: false as const,
+      error: 'must not run',
+    }));
+    const dependencies = {
+      fetchLatestVersion: fetchRelease,
+      isNewerVersion,
+      downloadBinary: async () => ({ success: true as const, data: 'unused' }),
+      replaceBinary: async () => ({
+        success: true as const,
+        data: undefined,
+      }),
+    } satisfies UpdateDependencies;
+
+    expect(await updateCommand('1.2.3', undefined, dependencies)).toEqual({
+      messages: [],
+      outcome: {
+        ok: false,
+        failure: {
+          kind: 'message',
+          message:
+            'Cannot update from a source invocation; use the compiled Tickets executable',
+        },
+      },
+    });
+    expect(fetchRelease).toHaveBeenCalledTimes(0);
+  });
+
   test('does not download or replace an already-current version', async () => {
     const download = mock(async () => ({
       success: true as const,
