@@ -1,4 +1,5 @@
 import type { ProjectSelection } from './git.ts';
+import type { LintViolation } from './tracker/index.ts';
 
 type ProjectSelectionFailure = Extract<ProjectSelection, { ok: false }>;
 
@@ -26,5 +27,23 @@ export function formatProjectSelectionFailure(
       return `Cannot discover a project: no project matches origin ${JSON.stringify(failure.origin)}; use --project.`;
     case 'ambiguous':
       return `Cannot discover a project: origin ${JSON.stringify(failure.origin)} matches multiple projects (${failure.projects.join(', ')}); use --project.`;
+  }
+}
+
+export function writeLint(
+  project: string,
+  violations: readonly LintViolation[],
+  json: boolean
+): void {
+  if (json) {
+    process.stdout.write(
+      `${JSON.stringify({ project, violations }, null, 2)}\n`
+    );
+    return;
+  }
+  for (const violation of violations) {
+    process.stdout.write(
+      `${violation.path}\t${violation.code}\t${violation.message}\n`
+    );
   }
 }

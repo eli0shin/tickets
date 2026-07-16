@@ -1,7 +1,15 @@
 import { afterEach, describe, expect, spyOn, test } from 'bun:test';
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import {
+  mkdtemp,
+  mkdir,
+  readFile,
+  rm,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { createLintWorkspace } from './fixtures/lint-workspace.ts';
 import {
   createTracker,
   isNormalizedName,
@@ -257,6 +265,141 @@ describe('tracker filesystem discovery', () => {
     expect(outcome.diagnostics[0]?.path).toBe(workspaceRoot);
     expect(outcome.diagnostics[0]?.code).toBe('filesystem-error');
     expect(outcome.diagnostics[0]?.message.includes('ENOENT')).toBe(true);
+  });
+});
+
+describe('tracker project lint', () => {
+  test('reports the exact violation catalog through real workspace files', async () => {
+    const workspaceRoot = await temporaryWorkspace();
+    const cases = await createLintWorkspace(workspaceRoot);
+    const tracker = createTracker(workspaceRoot);
+    let observedCodes = new Set<string>();
+    const preservedPaths = [
+      join(workspaceRoot, 'clean-project', 'todo', '001-clean.md'),
+      join(workspaceRoot, 'ticket-errors', 'todo', '003-malformed.md'),
+    ];
+    const before = await Promise.all(
+      preservedPaths.map((path) => readFile(path, 'utf8'))
+    );
+
+    for (const lintCase of cases) {
+      const result = await tracker.lintProject(lintCase.project);
+      expect(result.ok).toBe(true);
+      if (!result.ok) throw new Error(result.diagnostic.message);
+      const actualCodes = result.violations.map((violation) => violation.code);
+      observedCodes = new Set([...observedCodes, ...actualCodes]);
+      expect(actualCodes.toSorted()).toEqual([...lintCase.codes].toSorted());
+      expect(
+        result.violations.every((violation) =>
+          violation.path.startsWith(join(workspaceRoot, lintCase.project))
+        )
+      ).toBe(true);
+      expect(result.violations).toEqual(
+        result.violations.toSorted(
+          (left, right) =>
+            left.path.localeCompare(right.path) ||
+            left.code.localeCompare(right.code) ||
+            left.message.localeCompare(right.message)
+        )
+      );
+    }
+
+    expect(
+      await Promise.all(preservedPaths.map((path) => readFile(path, 'utf8')))
+    ).toEqual(before);
+    expect([...observedCodes].toSorted()).toEqual(
+      [
+        'unexpected-project-entry',
+        'unexpected-status-entry',
+        'missing-project-metadata',
+        'malformed-project-yaml',
+        'duplicate-project-key',
+        'missing-default-status',
+        'invalid-default-status',
+        'missing-default-status-directory',
+        'invalid-git-repo',
+        'malformed-ticket-yaml',
+        'duplicate-ticket-key',
+        'invalid-assigned-to',
+        'invalid-tags',
+        'invalid-parent',
+        'invalid-blocked-by',
+        'duplicate-ticket-id',
+        'broken-parent-reference',
+        'broken-blocker-reference',
+        'duplicate-git-repo',
+      ].toSorted()
+    );
+  });
+
+  test('reads symlinked project metadata and ignores unrelated symlinks', async () => {
+    const workspaceRoot = await temporaryWorkspace();
+    const projectPath = join(workspaceRoot, 'symlinked-project');
+    const metadataPath = join(workspaceRoot, 'project-metadata.md');
+    await mkdir(join(projectPath, 'todo'), { recursive: true });
+    await writeFile(
+      metadataPath,
+      '---\nDefault-Status: todo\nGit-Repo:\n---\n'
+    );
+    await Promise.all([
+      symlink('../project-metadata.md', join(projectPath, 'project.md')),
+      symlink(metadataPath, join(projectPath, 'unrelated-link')),
+    ]);
+
+    const result =
+      await createTracker(workspaceRoot).lintProject('symlinked-project');
+
+    expect(result).toEqual({ ok: true, violations: [] });
+  });
+
+  test('detects a duplicate repository in symlinked peer metadata', async () => {
+    const workspaceRoot = await temporaryWorkspace();
+    const selectedPath = join(workspaceRoot, 'selected-project');
+    const peerPath = join(workspaceRoot, 'peer-project');
+    const peerMetadataPath = join(workspaceRoot, 'peer-metadata.md');
+    const metadata =
+      '---\nDefault-Status: todo\nGit-Repo: https://example.com/owner/repo.git\n---\n';
+    await Promise.all([
+      mkdir(join(selectedPath, 'todo'), { recursive: true }),
+      mkdir(join(peerPath, 'todo'), { recursive: true }),
+    ]);
+    await Promise.all([
+      writeFile(join(selectedPath, 'project.md'), metadata),
+      writeFile(peerMetadataPath, metadata),
+    ]);
+    await symlink('../peer-metadata.md', join(peerPath, 'project.md'));
+
+    const result =
+      await createTracker(workspaceRoot).lintProject('selected-project');
+
+    expect(result).toEqual({
+      ok: true,
+      violations: [
+        {
+          path: join(selectedPath, 'project.md'),
+          code: 'duplicate-git-repo',
+          message: 'Git-Repo is also declared by: peer-project',
+        },
+      ],
+    });
+  });
+
+  test('returns invocation and filesystem failures outside the finding catalog', async () => {
+    const workspaceRoot = await temporaryWorkspace();
+    const tracker = createTracker(workspaceRoot);
+
+    expect(await tracker.lintProject('../outside')).toEqual({
+      ok: false,
+      diagnostic: {
+        path: workspaceRoot,
+        code: 'invalid-name',
+        message: 'Invalid project name: ../outside',
+      },
+    });
+    const missing = await tracker.lintProject('missing-project');
+    expect(missing.ok).toBe(false);
+    if (missing.ok) throw new Error('Expected a filesystem failure');
+    expect(missing.diagnostic.code).toBe('filesystem-error');
   });
 });
 

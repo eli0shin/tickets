@@ -22,6 +22,12 @@ import {
   parseTicketName,
   type ParsedTicketName,
 } from './internal/names.ts';
+import {
+  lintProject,
+  type LintCode,
+  type LintResult,
+  type LintViolation,
+} from './internal/lint.ts';
 
 export type {
   Discovery,
@@ -33,6 +39,9 @@ export type {
   Status,
   Ticket,
   TrackerDocument,
+  LintCode,
+  LintResult,
+  LintViolation,
 };
 
 export { isNormalizedName, isTicketReference, parseTicketName };
@@ -51,6 +60,7 @@ export type Tracker = {
     statusName: string,
     ticketName: string
   ): Promise<Outcome<TrackerDocument>>;
+  lintProject(projectName: string): Promise<LintResult>;
   writeProject(
     projectName: string,
     document: TrackerDocument
@@ -123,6 +133,15 @@ export function createTracker(workspaceRoot: string): Tracker {
       );
       if (!ticket.ok) return Promise.resolve(ticket);
       return readTrackerDocument(ticket.value.path, 'ticket');
+    },
+    lintProject: (projectName) => {
+      if (!isNormalizedName(projectName)) {
+        return Promise.resolve({
+          ok: false,
+          diagnostic: invalidDiagnostic(absoluteRoot, 'project', projectName),
+        });
+      }
+      return lintProject(absoluteRoot, projectName);
     },
     writeProject: (projectName, document) => {
       if (!isNormalizedName(projectName)) {
