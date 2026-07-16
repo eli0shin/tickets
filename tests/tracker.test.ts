@@ -607,6 +607,305 @@ describe('tracker read-only queries', () => {
   });
 });
 
+describe('tracker resource creation', () => {
+  test('creates projects with default and overridden status layouts', async () => {
+    const workspaceRoot = join(await temporaryWorkspace(), 'new-workspace');
+    const tracker = createTracker(workspaceRoot);
+
+    const defaultProject = await tracker.createProject('default-project');
+    const customProject = await tracker.createProject('custom-project', {
+      defaultStatus: 'backlog',
+    });
+    expect(defaultProject).toEqual({
+      ok: true,
+      value: {
+        name: 'default-project',
+        path: join(workspaceRoot, 'default-project'),
+      },
+    });
+    expect(customProject.ok).toBe(true);
+    expect(
+      (await tracker.discoverStatuses('default-project')).entries.map(
+        ({ name }) => name
+      )
+    ).toEqual(['done', 'in-progress', 'todo']);
+    expect(
+      (await tracker.discoverStatuses('custom-project')).entries.map(
+        ({ name }) => name
+      )
+    ).toEqual(['backlog', 'done', 'in-progress']);
+    expect(await tracker.readProject('custom-project')).toEqual({
+      ok: true,
+      value: {
+        metadata: { 'Default-Status': 'backlog', 'Git-Repo': null },
+        body: '',
+      },
+    });
+  });
+
+  test('deduplicates built-in project statuses and refuses invalid names and collisions', async () => {
+    const workspaceRoot = await temporaryWorkspace();
+    const tracker = createTracker(workspaceRoot);
+    expect(
+      await tracker.createProject('active-project', {
+        defaultStatus: 'in-progress',
+      })
+    ).toEqual({
+      ok: true,
+      value: {
+        name: 'active-project',
+        path: join(workspaceRoot, 'active-project'),
+      },
+    });
+    expect(
+      (await tracker.discoverStatuses('active-project')).entries.map(
+        ({ name }) => name
+      )
+    ).toEqual(['done', 'in-progress']);
+
+    const original = await readFile(
+      join(workspaceRoot, 'active-project', 'project.md'),
+      'utf8'
+    );
+    const collision = await tracker.createProject('active-project');
+    expect(collision.ok).toBe(false);
+    if (collision.ok) throw new Error('Expected project collision');
+    expect(collision.diagnostic).toEqual({
+      path: join(workspaceRoot, 'active-project'),
+      code: 'resource-exists',
+      message: `Resource already exists: ${join(
+        workspaceRoot,
+        'active-project'
+      )}`,
+    });
+    expect(
+      await readFile(
+        join(workspaceRoot, 'active-project', 'project.md'),
+        'utf8'
+      )
+    ).toBe(original);
+
+    for (const [name, options] of [
+      ['Invalid', undefined],
+      ['valid-project', { defaultStatus: 'Not-Normal' }],
+    ] as const) {
+      const outcome = await tracker.createProject(name, options);
+      expect(outcome.ok).toBe(false);
+      if (outcome.ok) throw new Error('Expected invalid project input');
+      expect(outcome.diagnostic.code).toBe('invalid-name');
+    }
+  });
+
+  test('creates statuses only in existing projects and never overwrites', async () => {
+    const workspaceRoot = await temporaryWorkspace();
+    const tracker = createTracker(workspaceRoot);
+    await tracker.createProject('alpha-project');
+
+    const created = await tracker.createStatus('alpha-project', 'review');
+    expect(created.ok).toBe(true);
+    if (!created.ok) throw new Error(created.diagnostic.message);
+    await writeFile(join(created.value.path, 'keep.txt'), 'keep');
+
+    for (const outcome of [
+      await tracker.createStatus('alpha-project', 'review'),
+      await tracker.createStatus('alpha-project', 'Not-Normal'),
+      await tracker.createStatus('missing-project', 'review'),
+    ]) {
+      expect(outcome.ok).toBe(false);
+    }
+    expect(await readFile(join(created.value.path, 'keep.txt'), 'utf8')).toBe(
+      'keep'
+    );
+  });
+
+  test('allocates across statuses without filling ID gaps and writes all metadata', async () => {
+    const workspaceRoot = await temporaryWorkspace();
+    const tracker = createTracker(workspaceRoot);
+    await tracker.createProject('alpha-project', { defaultStatus: 'backlog' });
+    await writeFile(
+      join(workspaceRoot, 'alpha-project', 'done', '003-old.md'),
+      '---\n---\n'
+    );
+    await writeFile(
+      join(workspaceRoot, 'alpha-project', 'backlog', '001-gap.md'),
+      '---\n---\n'
+    );
+
+    const created = await tracker.createTicket('alpha-project', {
+      description: 'implement-creation',
+      assignee: 'agent-one',
+      tags: ['feature', 'filesystem'],
+      parent: 'other-project/001-parent',
+      blockedBy: ['002-local', 'other-project/004-remote'],
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) throw new Error(created.diagnostic.message);
+    expect(created.value).toEqual({
+      id: 4n,
+      name: '004-implement-creation',
+      description: 'implement-creation',
+      path: join(
+        workspaceRoot,
+        'alpha-project',
+        'backlog',
+        '004-implement-creation.md'
+      ),
+      status: {
+        name: 'backlog',
+        path: join(workspaceRoot, 'alpha-project', 'backlog'),
+        project: {
+          name: 'alpha-project',
+          path: join(workspaceRoot, 'alpha-project'),
+        },
+      },
+    });
+    expect(await readFile(created.value.path, 'utf8')).toBe(
+      [
+        '---',
+        'Assigned-To: agent-one',
+        'Tags:',
+        '  - feature',
+        '  - filesystem',
+        'Parent: other-project/001-parent',
+        'Blocked-By:',
+        '  - 002-local',
+        '  - other-project/004-remote',
+        '---',
+        '',
+      ].join('\n')
+    );
+  });
+
+  test('supports status overrides and empty standard ticket metadata', async () => {
+    const workspaceRoot = await temporaryWorkspace();
+    const tracker = createTracker(workspaceRoot);
+    await tracker.createProject('alpha-project');
+
+    const created = await tracker.createTicket('alpha-project', {
+      description: 'empty-metadata',
+      status: 'in-progress',
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) throw new Error(created.diagnostic.message);
+    expect(created.value.status.name).toBe('in-progress');
+    expect(await readFile(created.value.path, 'utf8')).toBe(
+      '---\nAssigned-To:\nTags: []\nParent:\nBlocked-By: []\n---\n'
+    );
+  });
+
+  test('rejects invalid ticket inputs, missing statuses, and malformed project defaults', async () => {
+    const workspaceRoot = await temporaryWorkspace();
+    const tracker = createTracker(workspaceRoot);
+    await tracker.createProject('alpha-project');
+
+    const acceptedValidationCodes = new Set([
+      'invalid-name',
+      'invalid-reference',
+    ]);
+    const inputs = [
+      { description: 'Invalid' },
+      { description: 'valid', status: 'Not-Normal' },
+      { description: 'valid', assignee: 'Not-Normal' },
+      { description: 'valid', tags: ['Not-Normal'] },
+      { description: 'valid', parent: 'bad/reference/shape' },
+      { description: 'valid', blockedBy: ['not-a-ticket'] },
+    ];
+    for (const input of inputs) {
+      const outcome = await tracker.createTicket('alpha-project', input);
+      expect(outcome.ok).toBe(false);
+      if (outcome.ok) throw new Error('Expected invalid ticket input');
+      expect(acceptedValidationCodes.has(outcome.diagnostic.code)).toBe(true);
+    }
+
+    const missing = await tracker.createTicket('alpha-project', {
+      description: 'missing-status',
+      status: 'review',
+    });
+    expect(missing.ok).toBe(false);
+    if (missing.ok) throw new Error('Expected missing status');
+    expect(missing.diagnostic.code).toBe('status-not-found');
+
+    await writeFile(
+      join(workspaceRoot, 'alpha-project', 'project.md'),
+      '---\nDefault-Status: Not-Normal\n---\n'
+    );
+    const malformedDefault = await tracker.createTicket('alpha-project', {
+      description: 'bad-default',
+    });
+    expect(malformedDefault.ok).toBe(false);
+    if (malformedDefault.ok) throw new Error('Expected invalid default status');
+    expect(malformedDefault.diagnostic.code).toBe('invalid-status');
+  });
+
+  test('does not overwrite a colliding ticket destination', async () => {
+    const workspaceRoot = await temporaryWorkspace();
+    const tracker = createTracker(workspaceRoot);
+    await tracker.createProject('alpha-project');
+    const collisionPath = join(
+      workspaceRoot,
+      'alpha-project',
+      'todo',
+      '001-collision.md'
+    );
+    await mkdir(collisionPath);
+
+    const outcome = await tracker.createTicket('alpha-project', {
+      description: 'collision',
+    });
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) throw new Error('Expected ticket collision');
+    expect(outcome.diagnostic).toEqual({
+      path: collisionPath,
+      code: 'resource-exists',
+      message: `Resource already exists: ${collisionPath}`,
+    });
+  });
+
+  test('serializes concurrent ticket ID allocation across statuses', async () => {
+    const workspaceRoot = await temporaryWorkspace();
+    const tracker = createTracker(workspaceRoot);
+    await tracker.createProject('alpha-project');
+
+    const outcomes = await Promise.all([
+      tracker.createTicket('alpha-project', {
+        description: 'first-concurrent',
+        status: 'todo',
+      }),
+      tracker.createTicket('alpha-project', {
+        description: 'second-concurrent',
+        status: 'in-progress',
+      }),
+    ]);
+    expect(outcomes.every(({ ok }) => ok)).toBe(true);
+    const ids = outcomes.flatMap((outcome) =>
+      outcome.ok ? [outcome.value.id] : []
+    );
+    expect(ids.toSorted()).toEqual([1n, 2n]);
+  });
+
+  test('requires a valid declared default status even with an override', async () => {
+    const workspaceRoot = await temporaryWorkspace();
+    const tracker = createTracker(workspaceRoot);
+    await tracker.createProject('alpha-project');
+    await writeFile(
+      join(workspaceRoot, 'alpha-project', 'project.md'),
+      '---\nGit-Repo:\n---\n'
+    );
+
+    for (const outcome of [
+      await tracker.createStatus('alpha-project', 'review'),
+      await tracker.createTicket('alpha-project', {
+        description: 'explicit-status',
+        status: 'todo',
+      }),
+    ]) {
+      expect(outcome.ok).toBe(false);
+      if (outcome.ok) throw new Error('Expected invalid project metadata');
+      expect(outcome.diagnostic.code).toBe('invalid-status');
+    }
+  });
+});
+
 describe('tracker document parsing and canonical writing', () => {
   test('parses project metadata and retains optional and unknown fields semantically', async () => {
     const workspaceRoot = await temporaryWorkspace();

@@ -4,6 +4,11 @@ import { CommanderError } from 'commander';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { version } from '../package.json';
+import {
+  createProject,
+  createStatus,
+  createTicket,
+} from './commands/create.ts';
 import { lintProject } from './commands/lint.ts';
 import { addReadOnlyCommands } from './commands/read.ts';
 import {
@@ -16,6 +21,7 @@ import {
   formatProjectSelectionFailure,
   writeDiagnostic,
   writeLint,
+  writeMutation,
   writeSuccess,
 } from './output.ts';
 import { createTracker, type DocumentDiagnostic } from './tracker/index.ts';
@@ -53,6 +59,59 @@ export function createProgram({
     .option('--project <name>', 'select a project by name');
 
   addReadOnlyCommands(program, selectProjectForCli, cwd);
+
+  const project = program.commands.find(({ name }) => name() === 'project');
+  if (project === undefined)
+    throw new Error('Project command group is missing');
+
+  project
+    .command('create')
+    .description('create a project')
+    .argument('<name>', 'normalized project name')
+    .option('--default-status <status>', 'default status (replaces todo)')
+    .action(async (name, { defaultStatus }) => {
+      const tracker = trackerFor(program.opts().workspace);
+      writeMutation(await createProject(tracker, name, defaultStatus));
+    });
+
+  const status = program.commands.find(({ name }) => name() === 'status');
+  if (status === undefined) throw new Error('Status command group is missing');
+
+  status
+    .command('create')
+    .description('create a status in the selected project')
+    .argument('<name>', 'normalized status name')
+    .action(async (name) => {
+      const projectName = selectedProject(program.opts().project);
+      if (projectName === null) return;
+      const tracker = trackerFor(program.opts().workspace);
+      writeMutation(await createStatus(tracker, projectName, name));
+    });
+
+  program
+    .command('create')
+    .description('create a ticket in the selected project')
+    .argument('<description>', 'normalized ticket description')
+    .option('--status <status>', 'status for the new ticket')
+    .option('--assign <assignee>', 'assignee for the new ticket')
+    .option('--tag <tag...>', 'one or more tags')
+    .option('--parent <reference>', 'parent ticket reference')
+    .option('--blocked-by <reference...>', 'one or more blocking references')
+    .action(async (description, options) => {
+      const projectName = selectedProject(program.opts().project);
+      if (projectName === null) return;
+      const tracker = trackerFor(program.opts().workspace);
+      writeMutation(
+        await createTicket(tracker, projectName, {
+          description,
+          status: options.status,
+          assignee: options.assign,
+          tags: options.tag,
+          parent: options.parent,
+          blockedBy: options.blockedBy,
+        })
+      );
+    });
 
   const skill = program.command('skill').description('manage agent skills');
 
@@ -152,6 +211,19 @@ async function loadProjectRepositories(
     }
   }
   return { ok: true, value: repositories };
+}
+
+function selectedProject(projectName: string | undefined): string | null {
+  if (projectName !== undefined) return projectName;
+  writeDiagnostic('Could not select a project; use --project <name>');
+  process.exitCode = 2;
+  return null;
+}
+
+function trackerFor(workspace: string | undefined) {
+  return createTracker(
+    workspace ?? join(homedir(), '.local', 'state', 'tickets')
+  );
 }
 
 export async function run(argv: string[] = process.argv): Promise<void> {

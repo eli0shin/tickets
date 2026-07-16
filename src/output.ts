@@ -132,3 +132,20 @@ function writeRecords(records: readonly (readonly string[])[]): void {
 function writeJson(value: unknown): void {
   process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
 }
+
+export function writeMutation(
+  outcome:
+    | { readonly ok: true; readonly value: { readonly path: string } }
+    | {
+        readonly ok: false;
+        readonly diagnostic: { readonly message: string };
+      }
+): void {
+  if (outcome.ok) {
+    writeSuccess(outcome.value.path);
+    return;
+  }
+
+  writeDiagnostic(outcome.diagnostic.message);
+  process.exitCode = 2;
+}

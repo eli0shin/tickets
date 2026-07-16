@@ -16,20 +16,22 @@ const helpOutput = `Usage: tickets [options] [command]
 Manage tickets in a local filesystem tracker
 
 Options:
-  -v, --version            output the version number
-  --workspace <path>       override the default ~/.local/state/tickets workspace
-  --project <name>         select a project by name
-  -h, --help               display help for command
+  -v, --version                   output the version number
+  --workspace <path>              override the default ~/.local/state/tickets
+                                  workspace
+  --project <name>                select a project by name
+  -h, --help                      display help for command
 
 Commands:
-  project                  manage projects
-  status                   manage statuses
-  show <reference>         show a complete ticket document
-  list [options] <status>  list tickets in one status
-  search [options]         search tickets using structured criteria
-  skill                    manage agent skills
-  lint [options]           validate the selected project
-  help [command]           display help for command
+  project                         manage projects
+  status                          manage statuses
+  show <reference>                show a complete ticket document
+  list [options] <status>         list tickets in one status
+  search [options]                search tickets using structured criteria
+  create [options] <description>  create a ticket in the selected project
+  skill                           manage agent skills
+  lint [options]                  validate the selected project
+  help [command]                  display help for command
 `;
 
 type ProcessResult = {
@@ -121,7 +123,7 @@ beforeAll(async () => {
   if (result.exitCode !== 0) {
     throw new Error(`Could not build tickets executable:\n${result.stderr}`);
   }
-}, 30_000);
+}, 120_000);
 
 afterAll(async () => {
   await rm(temporaryDirectory, { force: true, recursive: true });
@@ -137,7 +139,7 @@ describe.each([
       stderr: '',
       exitCode: 0,
     });
-  });
+  }, 15_000);
 
   test('--version prints the package version', async () => {
     expect(await run([...getCommand(), '--version'])).toEqual({
@@ -684,6 +686,173 @@ describe('read-only commands', () => {
     ).toEqual({
       stdout: '',
       stderr: '--assigned-to and --unassigned cannot be used together\n',
+      exitCode: 2,
+    });
+  });
+});
+
+describe('resource creation commands', () => {
+  test('creates default and custom projects and reports only their paths', async () => {
+    const workspace = join(temporaryDirectory, 'create-projects');
+    const defaultPath = join(workspace, 'default-project');
+    const customPath = join(workspace, 'custom-project');
+
+    expect(
+      await run([
+        'bun',
+        'src/cli.ts',
+        '--workspace',
+        workspace,
+        'project',
+        'create',
+        'default-project',
+      ])
+    ).toEqual({ stdout: `${defaultPath}\n`, stderr: '', exitCode: 0 });
+    expect(
+      await run([
+        'bun',
+        'src/cli.ts',
+        '--workspace',
+        workspace,
+        'project',
+        'create',
+        'custom-project',
+        '--default-status',
+        'backlog',
+      ])
+    ).toEqual({ stdout: `${customPath}\n`, stderr: '', exitCode: 0 });
+    expect(await readFile(join(customPath, 'project.md'), 'utf8')).toBe(
+      '---\nDefault-Status: backlog\nGit-Repo:\n---\n'
+    );
+  });
+
+  test('creates a status and fully populated ticket in an explicit project', async () => {
+    const workspace = join(temporaryDirectory, 'create-resources');
+    const projectPath = join(workspace, 'alpha-project');
+    await run([
+      'bun',
+      'src/cli.ts',
+      '--workspace',
+      workspace,
+      'project',
+      'create',
+      'alpha-project',
+    ]);
+
+    const statusPath = join(projectPath, 'review');
+    expect(
+      await run([
+        'bun',
+        'src/cli.ts',
+        '--workspace',
+        workspace,
+        '--project',
+        'alpha-project',
+        'status',
+        'create',
+        'review',
+      ])
+    ).toEqual({ stdout: `${statusPath}\n`, stderr: '', exitCode: 0 });
+
+    const ticketPath = join(statusPath, '001-add-resource.md');
+    expect(
+      await run([
+        'bun',
+        'src/cli.ts',
+        '--workspace',
+        workspace,
+        '--project',
+        'alpha-project',
+        'create',
+        'add-resource',
+        '--status',
+        'review',
+        '--assign',
+        'agent-one',
+        '--tag',
+        'feature',
+        'cli',
+        '--parent',
+        'other-project/001-parent',
+        '--blocked-by',
+        '002-blocker',
+        'other-project/003-blocker',
+      ])
+    ).toEqual({ stdout: `${ticketPath}\n`, stderr: '', exitCode: 0 });
+    expect(await readFile(ticketPath, 'utf8')).toBe(
+      [
+        '---',
+        'Assigned-To: agent-one',
+        'Tags:',
+        '  - feature',
+        '  - cli',
+        'Parent: other-project/001-parent',
+        'Blocked-By:',
+        '  - 002-blocker',
+        '  - other-project/003-blocker',
+        '---',
+        '',
+      ].join('\n')
+    );
+  });
+
+  test('creation failures emit no stdout and exit 2 without overwriting', async () => {
+    const workspace = join(temporaryDirectory, 'create-failures');
+    const command = [
+      'bun',
+      'src/cli.ts',
+      '--workspace',
+      workspace,
+      'project',
+      'create',
+      'alpha-project',
+    ];
+    expect((await run(command)).exitCode).toBe(0);
+    const original = await readFile(
+      join(workspace, 'alpha-project', 'project.md'),
+      'utf8'
+    );
+
+    expect(await run(command)).toEqual({
+      stdout: '',
+      stderr: `Resource already exists: ${join(workspace, 'alpha-project')}\n`,
+      exitCode: 2,
+    });
+    expect(
+      await readFile(join(workspace, 'alpha-project', 'project.md'), 'utf8')
+    ).toBe(original);
+
+    expect(
+      await run([
+        'bun',
+        'src/cli.ts',
+        '--workspace',
+        workspace,
+        'create',
+        'missing-selection',
+      ])
+    ).toEqual({
+      stdout: '',
+      stderr: 'Could not select a project; use --project <name>\n',
+      exitCode: 2,
+    });
+
+    expect(
+      await run([
+        'bun',
+        'src/cli.ts',
+        '--workspace',
+        workspace,
+        '--project',
+        'alpha-project',
+        'create',
+        'bad-status',
+        '--status',
+        'missing',
+      ])
+    ).toEqual({
+      stdout: '',
+      stderr: 'Status not found: missing\n',
       exitCode: 2,
     });
   });

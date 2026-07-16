@@ -1,6 +1,12 @@
 import { readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import {
+  createProject,
+  createStatus,
+  createTicket,
+  type CreateTicketInput,
+} from './internal/creation.ts';
+import {
   discoverProjects,
   discoverStatuses,
   discoverTickets,
@@ -46,6 +52,7 @@ export type {
   Status,
   Ticket,
   TrackerDocument,
+  CreateTicketInput,
   LintCode,
   LintResult,
   LintViolation,
@@ -58,6 +65,15 @@ export { isNormalizedName, isTicketReference, parseTicketName };
 
 export type Tracker = {
   readonly workspaceRoot: string;
+  createProject(
+    name: string,
+    options?: { readonly defaultStatus?: string }
+  ): Promise<Outcome<Project>>;
+  createStatus(projectName: string, name: string): Promise<Outcome<Status>>;
+  createTicket(
+    projectName: string,
+    input: CreateTicketInput
+  ): Promise<Outcome<Ticket>>;
   discoverProjects(): Promise<Discovery<Project>>;
   discoverStatuses(projectName: string): Promise<Discovery<Status>>;
   discoverTickets(
@@ -124,6 +140,12 @@ export function createTracker(workspaceRoot: string): Tracker {
 
   return {
     workspaceRoot: absoluteRoot,
+    createProject: (name, options) =>
+      createProject(absoluteRoot, name, options?.defaultStatus ?? 'todo'),
+    createStatus: (projectName, name) =>
+      createStatus(absoluteRoot, projectName, name),
+    createTicket: (projectName, input) =>
+      createTicket(absoluteRoot, projectName, input),
     discoverProjects: () => discoverProjects(absoluteRoot),
     discoverStatuses: (projectName) => {
       if (!isNormalizedName(projectName)) {

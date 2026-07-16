@@ -21,11 +21,15 @@ export type DocumentDiagnosticCode =
   | 'duplicate-ticket-key'
   | 'filesystem-error'
   | 'invalid-name'
+  | 'invalid-reference'
+  | 'invalid-status'
   | 'invalid-ticket-metadata'
   | 'not-found'
   | 'malformed-project-yaml'
   | 'malformed-ticket-yaml'
-  | 'serialization-error';
+  | 'resource-exists'
+  | 'serialization-error'
+  | 'status-not-found';
 
 export type DocumentDiagnostic = {
   readonly path: string;
@@ -176,13 +180,38 @@ export async function writeTrackerDocument(
   path: string,
   document: TrackerDocument
 ): Promise<Outcome<undefined>> {
+  return writeDocument(path, document, 'w');
+}
+
+export async function writeNewTrackerDocument(
+  path: string,
+  document: TrackerDocument
+): Promise<Outcome<undefined>> {
+  return writeDocument(path, document, 'wx');
+}
+
+async function writeDocument(
+  path: string,
+  document: TrackerDocument,
+  flag: 'w' | 'wx'
+): Promise<Outcome<undefined>> {
   const serialization = serializeDocument(path, document);
   if (!serialization.ok) return serialization;
 
   try {
-    await writeFile(path, serialization.value, 'utf8');
+    await writeFile(path, serialization.value, { encoding: 'utf8', flag });
     return { ok: true, value: undefined };
   } catch (error) {
+    if (flag === 'wx' && hasErrorCode(error, new Set(['EEXIST', 'EISDIR']))) {
+      return {
+        ok: false,
+        diagnostic: {
+          path,
+          code: 'resource-exists',
+          message: `Resource already exists: ${path}`,
+        },
+      };
+    }
     return filesystemFailure(path, error);
   }
 }
@@ -351,6 +380,16 @@ function malformedFailure<T>(
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function hasErrorCode(error: unknown, codes: ReadonlySet<string>): boolean {
+  return (
+    error !== null &&
+    typeof error === 'object' &&
+    'code' in error &&
+    typeof error.code === 'string' &&
+    codes.has(error.code)
+  );
 }
 
 function filesystemFailure<T>(path: string, error: unknown): Outcome<T> {
