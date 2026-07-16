@@ -1304,6 +1304,133 @@ describe('tracker document parsing and canonical writing', () => {
     expect(await readFile(collectionPath, 'utf8')).toBe(collectionSource);
   });
 
+  test('preserves external aliases anchored below an immutably replaced field', async () => {
+    const workspaceRoot = await temporaryWorkspace();
+    const statusPath = join(workspaceRoot, 'alpha-project', 'todo');
+    const ticketPath = join(statusPath, '001-nested-anchor.md');
+    await mkdir(statusPath, { recursive: true });
+    await writeFile(
+      ticketPath,
+      '---\nA: {child: &shared {value: old}, other: &second {value: second}}\nB: *shared\nC: &shared {value: later}\nD: *shared\nE: *second\n---\n'
+    );
+
+    const tracker = createTracker(workspaceRoot);
+    const document = await tracker.readTicket(
+      'alpha-project',
+      'todo',
+      '001-nested-anchor'
+    );
+    if (!document.ok) throw new Error(document.diagnostic.message);
+    const rewritten = {
+      ...document.value,
+      metadata: {
+        ...document.value.metadata,
+        A: {
+          child: { value: 'new' },
+          other: { value: 'new-second' },
+        },
+      },
+    };
+    expect(
+      await tracker.writeTicket(
+        'alpha-project',
+        'todo',
+        '001-nested-anchor',
+        rewritten
+      )
+    ).toEqual({ ok: true, value: undefined });
+
+    const reread = await tracker.readTicket(
+      'alpha-project',
+      'todo',
+      '001-nested-anchor'
+    );
+    if (!reread.ok) throw new Error(reread.diagnostic.message);
+    expect(reread.value.metadata.A).toEqual({
+      child: { value: 'new' },
+      other: { value: 'new-second' },
+    });
+    expect(reread.value.metadata.B).toEqual({ value: 'old' });
+    expect(reread.value.metadata.E).toEqual({ value: 'second' });
+    expect(reread.value.metadata.C).toEqual({ value: 'later' });
+    expect(reread.value.metadata.D).toBe(reread.value.metadata.C);
+    const updated = reread.value.metadata.A;
+    if (updated === null || typeof updated !== 'object') {
+      throw new Error('Expected updated metadata map');
+    }
+    const updatedChild: unknown = Reflect.get(updated, 'child');
+    expect(updatedChild === reread.value.metadata.B).toBe(false);
+  });
+
+  test('leaves complex nested alias graphs untouched when they cannot be preserved safely', async () => {
+    const workspaceRoot = await temporaryWorkspace();
+    const statusPath = join(workspaceRoot, 'alpha-project', 'todo');
+    await mkdir(statusPath, { recursive: true });
+    const sources = [
+      '---\nA: {child: &shared {self: *shared}}\nB: *shared\n---\n',
+      '---\nA: &outer {child: &inner {value: old}}\nB: *outer\nC: *inner\n---\n',
+      '---\nX: &external {value: x}\nA: {child: &inner {ref: *external}}\nB: *inner\n---\n',
+    ];
+    const tracker = createTracker(workspaceRoot);
+
+    for (const [index, source] of sources.entries()) {
+      const name = `00${index + 1}-complex-aliases`;
+      const ticketPath = join(statusPath, `${name}.md`);
+      await writeFile(ticketPath, source);
+      const document = await tracker.readTicket('alpha-project', 'todo', name);
+      if (!document.ok) throw new Error(document.diagnostic.message);
+      const rewritten = {
+        ...document.value,
+        metadata: {
+          ...document.value.metadata,
+          A: { child: { value: 'new' } },
+        },
+      };
+      const outcome = await tracker.writeTicket(
+        'alpha-project',
+        'todo',
+        name,
+        rewritten
+      );
+      expect(outcome.ok).toBe(false);
+      if (outcome.ok) throw new Error('Expected serialization to be refused');
+      expect(outcome.diagnostic.code).toBe('serialization-error');
+      expect(await readFile(ticketPath, 'utf8')).toBe(source);
+    }
+
+    const blockersName = '004-complex-blocker-aliases';
+    const blockersPath = join(statusPath, `${blockersName}.md`);
+    const blockersSource =
+      '---\nX: &external [value]\nBlocked-By: &outer [*external]\nEcho: *outer\n---\n';
+    await writeFile(blockersPath, blockersSource);
+    const blockersDocument = await tracker.readTicket(
+      'alpha-project',
+      'todo',
+      blockersName
+    );
+    if (!blockersDocument.ok) {
+      throw new Error(blockersDocument.diagnostic.message);
+    }
+    const blockersOutcome = await tracker.writeTicket(
+      'alpha-project',
+      'todo',
+      blockersName,
+      {
+        ...blockersDocument.value,
+        metadata: {
+          ...blockersDocument.value.metadata,
+          'Blocked-By': ['001-new'],
+        },
+      }
+    );
+    expect(blockersOutcome.ok).toBe(false);
+    if (blockersOutcome.ok) {
+      throw new Error('Expected blocker serialization to be refused');
+    }
+    expect(blockersOutcome.diagnostic.code).toBe('serialization-error');
+    expect(await readFile(blockersPath, 'utf8')).toBe(blockersSource);
+  });
+
   test('leaves aliased fields untouched when a deep edit cannot preserve shared identity', async () => {
     const workspaceRoot = await temporaryWorkspace();
     const statusPath = join(workspaceRoot, 'alpha-project', 'todo');

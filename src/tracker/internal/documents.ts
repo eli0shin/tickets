@@ -15,6 +15,7 @@ import {
   type Scalar,
   type YAMLMap,
   type YAMLParseError,
+  type YAMLSeq,
 } from 'yaml';
 
 export type Metadata = Readonly<Record<string, unknown>>;
@@ -958,16 +959,106 @@ function preserveAliasesOfReplacedValue(
   const pair = map.items.find(
     (item) => isScalar(item.key) && item.key.value === key
   );
-  const value = pair?.value;
-  if (
-    (!isScalar(value) && !isMap(value) && !isSeq(value)) ||
-    value.anchor === undefined
-  ) {
-    return;
-  }
+  if (!isNode(pair?.value)) return;
 
-  const source = value.anchor;
+  const plans = anchoredValuesIn(pair.value).flatMap((value) => {
+    const aliases = externalAliasesFor(document, value, replacedAliases);
+    return aliases.length === 0 ? [] : [{ value, aliases }];
+  });
+  if (
+    plansShareAnchoredSubtree(plans) ||
+    plans.some(
+      ({ value }) =>
+        containsAlias(value) &&
+        (key !== 'Blocked-By' || !aliasesResolveToScalars(document, value))
+    )
+  ) {
+    throw new Error('Cannot safely preserve nested YAML alias relationships');
+  }
+  for (const { value, aliases } of plans) {
+    preserveExternalAliases(document, value, aliases);
+  }
+}
+
+function anchoredValuesIn(node: Node): (Scalar | YAMLMap | YAMLSeq)[] {
+  const anchoredValues: (Scalar | YAMLMap | YAMLSeq)[] = [];
+  visit(node, {
+    Node: (_visitKey, value) => {
+      if (
+        (isScalar(value) || isMap(value) || isSeq(value)) &&
+        value.anchor !== undefined
+      ) {
+        anchoredValues.push(value);
+      }
+    },
+  });
+  return anchoredValues;
+}
+
+function externalAliasesFor(
+  document: Document<Node, boolean>,
+  value: Scalar | YAMLMap | YAMLSeq,
+  replacedAliases: ReadonlySet<Alias>
+): Alias[] {
   const aliases: Alias[] = [];
+  visit(document, {
+    Alias: (_visitKey, alias) => {
+      if (!replacedAliases.has(alias) && alias.resolve(document) === value) {
+        aliases.push(alias);
+      }
+    },
+  });
+  return aliases;
+}
+
+function plansShareAnchoredSubtree(
+  plans: readonly {
+    readonly value: Scalar | YAMLMap | YAMLSeq;
+    readonly aliases: readonly Alias[];
+  }[]
+): boolean {
+  const plannedValues = new Set(plans.map(({ value }) => value));
+  return plans.some(({ value }) =>
+    anchoredValuesIn(value).some(
+      (nested) => nested !== value && plannedValues.has(nested)
+    )
+  );
+}
+
+function aliasesResolveToScalars(
+  document: Document<Node, boolean>,
+  value: Scalar | YAMLMap | YAMLSeq
+): boolean {
+  let valid = true;
+  visit(value, {
+    Alias: (_visitKey, alias) => {
+      if (!isScalar(alias.resolve(document))) {
+        valid = false;
+        return visit.BREAK;
+      }
+    },
+  });
+  return valid;
+}
+
+function containsAlias(value: Scalar | YAMLMap | YAMLSeq): boolean {
+  let found = false;
+  visit(value, {
+    Alias: () => {
+      found = true;
+      return visit.BREAK;
+    },
+  });
+  return found;
+}
+
+function preserveExternalAliases(
+  document: Document<Node, boolean>,
+  value: Scalar | YAMLMap | YAMLSeq,
+  aliases: readonly Alias[]
+): void {
+  if (value.anchor === undefined) return;
+  const source = value.anchor;
   const anchors = new Set<string>();
   visit(document, {
     Node: (_visitKey, node) => {
@@ -975,16 +1066,14 @@ function preserveAliasesOfReplacedValue(
         anchors.add(node.anchor);
       }
     },
-    Alias: (_visitKey, alias) => {
-      if (alias.source === source && !replacedAliases.has(alias)) {
-        aliases.push(alias);
-      }
-    },
   });
-  if (aliases.length === 0) return;
-
   const anchor = uniqueAnchor(`${source}-preserved`, anchors);
-  const preserved = document.createNode(value.toJS(document));
+  const tag =
+    'tag' in value && typeof value.tag === 'string' ? value.tag : null;
+  const preserved =
+    tag === null
+      ? document.createNode(value.toJS(document))
+      : document.createNode(value.toJS(document), { tag });
   if (!isScalar(preserved) && !isMap(preserved) && !isSeq(preserved)) return;
   preserved.anchor = anchor;
   let first = true;
