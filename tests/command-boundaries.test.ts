@@ -26,6 +26,7 @@ describe('command module boundaries', () => {
       const source = await readFile(join(commandRoot, path), 'utf8');
       expect(source).not.toMatch(/from\s+['"][^'"]*commander[^'"]*['"]/u);
       expect(source).not.toMatch(/from\s+['"][^'"]*output\.ts['"]/u);
+      expect(source).not.toContain('createTracker');
       expect(source).not.toMatch(
         /(?:console\.|process\.(?:stdout|stderr|exit|exitCode)|Bun\.write)/u
       );

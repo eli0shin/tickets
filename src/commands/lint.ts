@@ -1,8 +1,8 @@
-import { createTracker, type LintResult } from '../tracker/index.ts';
+import type { LintResult, Tracker } from '../tracker/index.ts';
 
-export async function lintProject(
-  workspaceRoot: string,
+export function lintProject(
+  tracker: Tracker,
   projectName: string
 ): Promise<LintResult> {
-  return createTracker(workspaceRoot).lintProject(projectName);
+  return tracker.lintProject(projectName);
 }

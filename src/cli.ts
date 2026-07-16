@@ -342,10 +342,7 @@ export function createProgram({
       if (!selected.ok) return writeCommandFailure(selected.failure);
       writeLintOutcome(
         selected.value.project,
-        await lintProject(
-          selected.value.tracker.workspaceRoot,
-          selected.value.project
-        ),
+        await lintProject(selected.value.tracker, selected.value.project),
         Boolean(json)
       );
     });
