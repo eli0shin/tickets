@@ -113,6 +113,7 @@ export function createProgram({
   currentVersion = version,
   updateMessage,
 }: CliDependencies = {}): RootCommand {
+  let pendingUpdateMessage = updateMessage;
   const program = new Command()
     .configureOutput({ writeOut: writeStdout, writeErr: writeStderr })
     .exitOverride((error) => commanderExit(error.exitCode))
@@ -355,9 +356,13 @@ export function createProgram({
     .command('update')
     .description('update Tickets CLI to latest version')
     .action(async () => {
-      writeUpdateOutcome(
-        await updateCommand(currentVersion, executablePath, update)
+      const result = await updateCommand(
+        currentVersion,
+        executablePath,
+        update
       );
+      writeUpdateOutcome(result);
+      if (result.outcome.ok) pendingUpdateMessage = undefined;
     });
 
   const skill = program.command('skill').description('manage agent skills');
@@ -390,7 +395,7 @@ export function createProgram({
     });
 
   program.hook('postAction', () => {
-    writeUpdateMessage(updateMessage);
+    writeUpdateMessage(pendingUpdateMessage);
   });
 
   return program;

@@ -4,6 +4,7 @@ import {
   getUpdateStatePath,
 } from './update-state.ts';
 import type { UpdateBehavior } from './types.ts';
+import { isNewerVersion } from './update.ts';
 
 type AutoUpdateResult = {
   message?: string;
@@ -32,7 +33,11 @@ export async function handleAutoUpdate(
   let message: string | undefined;
 
   // Check for pending notification (notify mode only)
-  if (updateBehavior === 'notify' && state?.pendingNotification) {
+  if (
+    updateBehavior === 'notify' &&
+    state?.pendingNotification &&
+    isNewerVersion(currentVersion, state.pendingNotification)
+  ) {
     message = `Update available: v${state.pendingNotification}`;
   }
 

@@ -1587,6 +1587,34 @@ test('notify-mode update messages render after command output', async () => {
   });
 });
 
+test('successful manual update suppresses a pending notification', async () => {
+  const update = {
+    fetchLatestVersion: async () => ({
+      success: true as const,
+      data: { version: '1.2.3', downloadUrl: 'unused' },
+    }),
+    isNewerVersion,
+    downloadBinary: async () => ({ success: true as const, data: 'unused' }),
+    replaceBinary: async () => ({ success: true as const, data: undefined }),
+  } satisfies UpdateDependencies;
+
+  expect(
+    await captureProcessOutput(async () => {
+      await createProgram({
+        currentVersion: '1.2.3',
+        executablePath: '/tmp/tickets',
+        update,
+        updateMessage: 'Update available: v1.2.3',
+      }).parseAsync(['node', 'tickets', 'update']);
+    })
+  ).toEqual({
+    stdout:
+      'Current version: 1.2.3\nChecking for updates...\nAlready on latest version (v1.2.3)\n',
+    stderr: '',
+    exitCode: undefined,
+  });
+});
+
 test('update uses the standard output and failure status boundary', async () => {
   const update = {
     fetchLatestVersion: async () => ({

@@ -64,6 +64,18 @@ describe('handleAutoUpdate', () => {
     expect(spawn).toHaveBeenCalledTimes(0);
   });
 
+  test('does not return a notification already satisfied by the current version', async () => {
+    const path = await statePath();
+    await writeUpdateState(path, {
+      lastCheckedAt: Date.now(),
+      pendingNotification: '1.0.0',
+    });
+
+    expect(await handleAutoUpdate('1.0.0', 'notify', 24, path)).toEqual({
+      message: undefined,
+    });
+  });
+
   test('auto does not render pending notifications', async () => {
     const path = await statePath();
     await writeUpdateState(path, {
