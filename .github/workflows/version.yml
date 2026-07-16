@@ -12,6 +12,8 @@ jobs:
       pull-requests: write
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - name: Configure Git
         run: |
@@ -70,6 +72,14 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check out release commit
+        if: steps.check-release.outputs.needs_binaries == 'true'
+        run: git checkout --detach --force "refs/tags/${{ steps.check-release.outputs.version }}"
+
+      - name: Install release dependencies
+        if: steps.check-release.outputs.needs_binaries == 'true'
+        run: bun install --frozen-lockfile
 
       - name: Build linux-x64
         if: steps.check-release.outputs.needs_binaries == 'true'
