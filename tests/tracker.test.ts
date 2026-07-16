@@ -1304,6 +1304,271 @@ describe('tracker document parsing and canonical writing', () => {
     expect(await readFile(collectionPath, 'utf8')).toBe(collectionSource);
   });
 
+  test('rejects hostile subclasses without invoking their accessors', async () => {
+    class HostileMap extends Map<unknown, unknown> {}
+    class HostileSet extends Set<unknown> {}
+    class HostileDate extends Date {}
+
+    const values = [new HostileMap(), new HostileSet(), new HostileDate()];
+    Object.defineProperty(values[0], Symbol.iterator, {
+      get: () => {
+        throw new Error('Map iterator accessor must not be invoked');
+      },
+    });
+    Object.defineProperty(values[1], Symbol.iterator, {
+      get: () => {
+        throw new Error('Set iterator accessor must not be invoked');
+      },
+    });
+    Object.defineProperty(values[2], 'getTime', {
+      get: () => {
+        throw new Error('Date accessor must not be invoked');
+      },
+    });
+
+    const workspaceRoot = await temporaryWorkspace();
+    const statusPath = join(workspaceRoot, 'alpha-project', 'todo');
+    await mkdir(statusPath, { recursive: true });
+    const source = '---\nRetained: value\n---\n';
+    const tracker = createTracker(workspaceRoot);
+    for (const [index, value] of values.entries()) {
+      const name = `00${index + 1}-hostile-subclass`;
+      const ticketPath = join(statusPath, `${name}.md`);
+      await writeFile(ticketPath, source);
+      const document = await tracker.readTicket('alpha-project', 'todo', name);
+      if (!document.ok) throw new Error(document.diagnostic.message);
+      const outcome = await tracker.writeTicket('alpha-project', 'todo', name, {
+        ...document.value,
+        metadata: { ...document.value.metadata, Hostile: value },
+      });
+      expect(outcome.ok).toBe(false);
+      if (outcome.ok) throw new Error('Expected serialization to be refused');
+      expect(outcome.diagnostic).toEqual({
+        path: ticketPath,
+        code: 'serialization-error',
+        message: 'YAML front matter contains an unsupported value',
+      });
+      expect(await readFile(ticketPath, 'utf8')).toBe(source);
+    }
+  });
+
+  test('rejects incompatible replacements for every supported explicit tag', async () => {
+    const cases: readonly (readonly [string, unknown])[] = [
+      ['!!binary SGk=', 'changed'],
+      ['!!bool true', 'changed'],
+      ['!!float 1.0', 'changed'],
+      ['!!int 1', 'changed'],
+      ['!!map {one: 1}', 'changed'],
+      ['!!null null', 'changed'],
+      ['!!omap [one: 1]', 'changed'],
+      ['!!pairs [one: 1]', 'changed'],
+      ['!!seq [one]', 'changed'],
+      ['!!set {one: null}', 'changed'],
+      ['!!str old', 1n],
+      ['!!timestamp 2002-12-14', 'changed'],
+    ];
+    const workspaceRoot = await temporaryWorkspace();
+    const statusPath = join(workspaceRoot, 'alpha-project', 'todo');
+    await mkdir(statusPath, { recursive: true });
+    const tracker = createTracker(workspaceRoot);
+
+    for (const [index, [taggedValue, replacement]] of cases.entries()) {
+      const name = `${String(index + 1).padStart(3, '0')}-tag-change`;
+      const ticketPath = join(statusPath, `${name}.md`);
+      const source = `---\nUnknown: ${taggedValue}\n---\n`;
+      await writeFile(ticketPath, source);
+      const document = await tracker.readTicket('alpha-project', 'todo', name);
+      if (!document.ok) throw new Error(document.diagnostic.message);
+      Reflect.set(document.value.metadata, 'Unknown', replacement);
+      const outcome = await tracker.writeTicket(
+        'alpha-project',
+        'todo',
+        name,
+        document.value
+      );
+      expect(outcome.ok).toBe(false);
+      if (outcome.ok) throw new Error('Expected tag change to be refused');
+      expect(outcome.diagnostic.code).toBe('serialization-error');
+      expect(await readFile(ticketPath, 'utf8')).toBe(source);
+    }
+  });
+
+  test('rejects invalid pairs replacement shapes without writing', async () => {
+    const replacements: readonly unknown[] = [
+      [1n],
+      ['x'],
+      [{}],
+      [{ one: 1n, two: 2n }],
+    ];
+    const workspaceRoot = await temporaryWorkspace();
+    const statusPath = join(workspaceRoot, 'alpha-project', 'todo');
+    await mkdir(statusPath, { recursive: true });
+    const source = '---\nUnknown: !!pairs [one: 1]\n---\n';
+    const tracker = createTracker(workspaceRoot);
+
+    for (const [index, replacement] of replacements.entries()) {
+      const name = `00${index + 1}-invalid-pairs-update`;
+      const ticketPath = join(statusPath, `${name}.md`);
+      await writeFile(ticketPath, source);
+      const document = await tracker.readTicket('alpha-project', 'todo', name);
+      if (!document.ok) throw new Error(document.diagnostic.message);
+      Reflect.set(document.value.metadata, 'Unknown', replacement);
+      const outcome = await tracker.writeTicket(
+        'alpha-project',
+        'todo',
+        name,
+        document.value
+      );
+      expect(outcome.ok).toBe(false);
+      if (outcome.ok) throw new Error('Expected pairs update to be refused');
+      expect(outcome.diagnostic.code).toBe('serialization-error');
+      expect(await readFile(ticketPath, 'utf8')).toBe(source);
+    }
+  });
+
+  test('rejects new or changed fields sharing objects with retained metadata', async () => {
+    const workspaceRoot = await temporaryWorkspace();
+    const statusPath = join(workspaceRoot, 'alpha-project', 'todo');
+    await mkdir(statusPath, { recursive: true });
+    const source =
+      '---\nRetained: {value: old}\nChanged: {value: before}\n---\n';
+    const tracker = createTracker(workspaceRoot);
+
+    for (const [index, field] of ['Added', 'Changed'].entries()) {
+      const name = `00${index + 1}-shared-update`;
+      const ticketPath = join(statusPath, `${name}.md`);
+      await writeFile(ticketPath, source);
+      const document = await tracker.readTicket('alpha-project', 'todo', name);
+      if (!document.ok) throw new Error(document.diagnostic.message);
+      const retained = document.value.metadata.Retained;
+      const outcome = await tracker.writeTicket('alpha-project', 'todo', name, {
+        ...document.value,
+        metadata: { ...document.value.metadata, [field]: retained },
+      });
+      expect(outcome.ok).toBe(false);
+      if (outcome.ok) throw new Error('Expected shared update to be refused');
+      expect(outcome.diagnostic.code).toBe('serialization-error');
+      expect(await readFile(ticketPath, 'utf8')).toBe(source);
+    }
+  });
+
+  test('preserves explicit custom tags on externally aliased old values', async () => {
+    const cases: readonly (readonly [string, unknown, unknown])[] = [
+      ['!!binary SGk=', Buffer.from('Bye'), Buffer.from('Hi')],
+      ['!!omap [one: 1]', new Map([['two', 2n]]), new Map([['one', 1n]])],
+      ['!!pairs [one: 1]', [{ two: 2n }], [{ one: 1n }]],
+      ['!!set {one: null}', new Set(['two']), new Set(['one'])],
+      [
+        '!!timestamp 2002-12-14',
+        new Date('2003-01-01T00:00:00.000Z'),
+        new Date('2002-12-14T00:00:00.000Z'),
+      ],
+    ];
+    const workspaceRoot = await temporaryWorkspace();
+    const statusPath = join(workspaceRoot, 'alpha-project', 'todo');
+    await mkdir(statusPath, { recursive: true });
+    const tracker = createTracker(workspaceRoot);
+
+    for (const [
+      index,
+      [taggedValue, replacement, oldValue],
+    ] of cases.entries()) {
+      const name = `00${index + 1}-tagged-alias`;
+      const ticketPath = join(statusPath, `${name}.md`);
+      await writeFile(
+        ticketPath,
+        `---\nUnknown: &shared ${taggedValue}\nAlias: *shared\n---\n`
+      );
+      const document = await tracker.readTicket('alpha-project', 'todo', name);
+      if (!document.ok) throw new Error(document.diagnostic.message);
+      expect(
+        await tracker.writeTicket('alpha-project', 'todo', name, {
+          ...document.value,
+          metadata: { ...document.value.metadata, Unknown: replacement },
+        })
+      ).toEqual({ ok: true, value: undefined });
+      const reread = await tracker.readTicket('alpha-project', 'todo', name);
+      if (!reread.ok) throw new Error(reread.diagnostic.message);
+      expect(reread.value.metadata.Unknown).toEqual(replacement);
+      expect(reread.value.metadata.Alias).toEqual(oldValue);
+      expect(await readFile(ticketPath, 'utf8')).toContain(
+        taggedValue.slice(0, taggedValue.indexOf(' '))
+      );
+    }
+  });
+
+  test('preserves complex keys in externally aliased pairs', async () => {
+    const workspaceRoot = await temporaryWorkspace();
+    const statusPath = join(workspaceRoot, 'alpha-project', 'todo');
+    const ticketPath = join(statusPath, '001-complex-pairs.md');
+    await mkdir(statusPath, { recursive: true });
+    await writeFile(
+      ticketPath,
+      '---\nChanged: &shared !!pairs [{? [a, b]: old}]\nRetained: *shared\n---\n'
+    );
+    const tracker = createTracker(workspaceRoot);
+    const document = await tracker.readTicket(
+      'alpha-project',
+      'todo',
+      '001-complex-pairs'
+    );
+    if (!document.ok) throw new Error(document.diagnostic.message);
+    expect(
+      await tracker.writeTicket('alpha-project', 'todo', '001-complex-pairs', {
+        ...document.value,
+        metadata: {
+          ...document.value.metadata,
+          Changed: [new Map([['new', 'value']])],
+        },
+      })
+    ).toEqual({ ok: true, value: undefined });
+
+    const reread = await tracker.readTicket(
+      'alpha-project',
+      'todo',
+      '001-complex-pairs'
+    );
+    if (!reread.ok) throw new Error(reread.diagnostic.message);
+    const retained = reread.value.metadata.Retained;
+    if (!Array.isArray(retained) || !(retained[0] instanceof Map)) {
+      throw new Error('Expected retained YAML pairs');
+    }
+    expect([...retained[0]].at(0)).toEqual([['a', 'b'], 'old']);
+  });
+
+  test('leaves tagged external aliases with internal aliases untouched', async () => {
+    const workspaceRoot = await temporaryWorkspace();
+    const statusPath = join(workspaceRoot, 'alpha-project', 'todo');
+    const ticketPath = join(statusPath, '001-tagged-internal-alias.md');
+    await mkdir(statusPath, { recursive: true });
+    const source =
+      '---\nScalar: &scalar old\nChanged: &shared !!pairs [{? [a, b]: *scalar}]\nRetained: *shared\n---\n';
+    await writeFile(ticketPath, source);
+    const tracker = createTracker(workspaceRoot);
+    const document = await tracker.readTicket(
+      'alpha-project',
+      'todo',
+      '001-tagged-internal-alias'
+    );
+    if (!document.ok) throw new Error(document.diagnostic.message);
+    const outcome = await tracker.writeTicket(
+      'alpha-project',
+      'todo',
+      '001-tagged-internal-alias',
+      {
+        ...document.value,
+        metadata: {
+          ...document.value.metadata,
+          Changed: [new Map([['new', 'value']])],
+        },
+      }
+    );
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) throw new Error('Expected serialization to be refused');
+    expect(outcome.diagnostic.code).toBe('serialization-error');
+    expect(await readFile(ticketPath, 'utf8')).toBe(source);
+  });
+
   test('preserves external aliases anchored below an immutably replaced field', async () => {
     const workspaceRoot = await temporaryWorkspace();
     const statusPath = join(workspaceRoot, 'alpha-project', 'todo');

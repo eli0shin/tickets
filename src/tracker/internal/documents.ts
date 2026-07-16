@@ -34,6 +34,12 @@ type ParsedMetadata = {
 
 const parsedMetadata = new WeakMap<object, ParsedMetadata>();
 const parsedValues = new WeakMap<object, Set<ParsedMetadata>>();
+const MAP_ENTRIES: (
+  this: Map<unknown, unknown>
+) => MapIterator<[unknown, unknown]> = Map.prototype.entries;
+const SET_VALUES: (this: Set<unknown>) => SetIterator<unknown> =
+  Set.prototype.values;
+const DATE_GET_TIME = Date.prototype.getTime;
 
 export type DocumentDiagnosticCode =
   | 'duplicate-project-key'
@@ -335,13 +341,13 @@ function visitObjectGraph(
     visited.add(value);
     visitValue(value);
 
-    if (isUnknownMap(value)) {
-      for (const [key, item] of value) {
+    if (isExactMap(value)) {
+      for (const [key, item] of MAP_ENTRIES.call(value)) {
         if (key !== null && typeof key === 'object') pending.push(key);
         if (item !== null && typeof item === 'object') pending.push(item);
       }
-    } else if (isUnknownSet(value)) {
-      for (const item of value) {
+    } else if (isExactSet(value)) {
+      for (const item of SET_VALUES.call(value)) {
         if (item !== null && typeof item === 'object') pending.push(item);
       }
     } else {
@@ -357,12 +363,34 @@ function visitObjectGraph(
   }
 }
 
-function isUnknownMap(value: object): value is Map<unknown, unknown> {
-  return value instanceof Map;
+function isExactMap(value: unknown): value is Map<unknown, unknown> {
+  return (
+    value !== null &&
+    typeof value === 'object' &&
+    Object.getPrototypeOf(value) === Map.prototype
+  );
 }
 
-function isUnknownSet(value: object): value is Set<unknown> {
-  return value instanceof Set;
+function isExactSet(value: unknown): value is Set<unknown> {
+  return (
+    value !== null &&
+    typeof value === 'object' &&
+    Object.getPrototypeOf(value) === Set.prototype
+  );
+}
+
+function isExactDate(value: unknown): value is Date {
+  return (
+    value !== null &&
+    typeof value === 'object' &&
+    Object.getPrototypeOf(value) === Date.prototype
+  );
+}
+
+function isExactBuffer(value: unknown): value is Buffer {
+  return (
+    Buffer.isBuffer(value) && Object.getPrototypeOf(value) === Buffer.prototype
+  );
 }
 
 function snapshotMetadata(metadata: Metadata): Metadata {
@@ -379,13 +407,13 @@ function snapshotValue(
   const existing = snapshots.get(value);
   if (existing !== undefined) return existing;
 
-  if (Buffer.isBuffer(value)) {
+  if (isExactBuffer(value)) {
     const snapshot = Buffer.from(value);
     snapshots.set(value, snapshot);
     return snapshot;
   }
-  if (value instanceof Date) {
-    const snapshot = new Date(value.getTime());
+  if (isExactDate(value)) {
+    const snapshot = new Date(DATE_GET_TIME.call(value));
     snapshots.set(value, snapshot);
     return snapshot;
   }
@@ -395,10 +423,10 @@ function snapshotValue(
     snapshot.push(...value.map((item) => snapshotValue(item, snapshots)));
     return snapshot;
   }
-  if (value instanceof Map) {
+  if (isExactMap(value)) {
     const snapshot = new Map<unknown, unknown>();
     snapshots.set(value, snapshot);
-    for (const [key, item] of value) {
+    for (const [key, item] of MAP_ENTRIES.call(value)) {
       snapshot.set(
         snapshotValue(key, snapshots),
         snapshotValue(item, snapshots)
@@ -406,10 +434,12 @@ function snapshotValue(
     }
     return snapshot;
   }
-  if (value instanceof Set) {
+  if (isExactSet(value)) {
     const snapshot = new Set<unknown>();
     snapshots.set(value, snapshot);
-    for (const item of value) snapshot.add(snapshotValue(item, snapshots));
+    for (const item of SET_VALUES.call(value)) {
+      snapshot.add(snapshotValue(item, snapshots));
+    }
     return snapshot;
   }
   if (Object.getPrototypeOf(value) === Object.prototype) {
@@ -444,7 +474,7 @@ function convertToMetadata(
       (pair) => !isStringKey(pair) || hasNonStringKey(pair.value)
     );
     const converted: unknown = document.toJS({ mapAsMap });
-    if (!(converted instanceof Map)) return { ok: true, value: converted };
+    if (!isExactMap(converted)) return { ok: true, value: converted };
     return materializeMetadata(converted, path, kind);
   } catch (error) {
     return malformedFailure(path, kind, error);
@@ -456,7 +486,7 @@ function materializeMetadata(
   path: string,
   kind: DocumentKind
 ): Outcome<Metadata> {
-  if ([...root.keys()].some((key) => typeof key !== 'string')) {
+  if ([...MAP_ENTRIES.call(root)].some(([key]) => typeof key !== 'string')) {
     return {
       ok: false,
       diagnostic: {
@@ -469,7 +499,7 @@ function materializeMetadata(
 
   const metadata = Object.fromEntries<unknown>([]);
   const transformed = new WeakMap<object, unknown>([[root, metadata]]);
-  for (const [key, value] of root) {
+  for (const [key, value] of MAP_ENTRIES.call(root)) {
     if (typeof key === 'string') {
       Object.defineProperty(metadata, key, {
         configurable: true,
@@ -496,18 +526,20 @@ function remapGraph(
     result.push(...value.map((item) => remapGraph(item, transformed)));
     return result;
   }
-  if (value instanceof Map) {
+  if (isExactMap(value)) {
     const result = new Map<unknown, unknown>();
     transformed.set(value, result);
-    for (const [key, item] of value) {
+    for (const [key, item] of MAP_ENTRIES.call(value)) {
       result.set(remapGraph(key, transformed), remapGraph(item, transformed));
     }
     return result;
   }
-  if (value instanceof Set) {
+  if (isExactSet(value)) {
     const result = new Set<unknown>();
     transformed.set(value, result);
-    for (const item of value) result.add(remapGraph(item, transformed));
+    for (const item of SET_VALUES.call(value)) {
+      result.add(remapGraph(item, transformed));
+    }
     return result;
   }
   return value;
@@ -595,29 +627,36 @@ function hasOnlyYamlMetadataProperties(
   if (visited.has(value)) return true;
   visited.add(value);
 
-  if (Buffer.isBuffer(value)) {
+  if (isExactBuffer(value)) {
     return hasOnlyIndexedDataProperties(value);
   }
-  if (value instanceof Date) return Reflect.ownKeys(value).length === 0;
-  if (value instanceof Map) {
+  if (isExactDate(value)) return Reflect.ownKeys(value).length === 0;
+  if (isExactMap(value)) {
     return (
       Reflect.ownKeys(value).length === 0 &&
-      [...value].every(
+      [...MAP_ENTRIES.call(value)].every(
         ([key, item]) =>
           hasOnlyYamlMetadataProperties(key, visited) &&
           hasOnlyYamlMetadataProperties(item, visited)
       )
     );
   }
-  if (value instanceof Set) {
+  if (isExactSet(value)) {
     return (
       Reflect.ownKeys(value).length === 0 &&
-      [...value].every((item) => hasOnlyYamlMetadataProperties(item, visited))
+      [...SET_VALUES.call(value)].every((item) =>
+        hasOnlyYamlMetadataProperties(item, visited)
+      )
     );
   }
 
   const array = Array.isArray(value);
-  if (!array && Object.getPrototypeOf(value) !== Object.prototype) return false;
+  if (
+    (array && Object.getPrototypeOf(value) !== Array.prototype) ||
+    (!array && Object.getPrototypeOf(value) !== Object.prototype)
+  ) {
+    return false;
+  }
   const keys = Reflect.ownKeys(value);
   if (
     array &&
@@ -649,6 +688,13 @@ function hasOnlyIndexedDataProperties(value: Buffer): boolean {
       const descriptor = Object.getOwnPropertyDescriptor(value, key);
       return descriptor?.enumerable === true && 'value' in descriptor;
     })
+  );
+}
+
+function buffersEqual(left: Buffer, right: Buffer): boolean {
+  return (
+    left.length === right.length &&
+    left.every((byte, index) => byte === right[index])
   );
 }
 
@@ -729,16 +775,16 @@ function graphValuesEqual(
   leftToRight.set(left, right);
   rightToLeft.set(right, left);
 
-  if (Buffer.isBuffer(left) || Buffer.isBuffer(right)) {
+  if (isExactBuffer(left) || isExactBuffer(right)) {
     return (
-      Buffer.isBuffer(left) && Buffer.isBuffer(right) && left.equals(right)
+      isExactBuffer(left) && isExactBuffer(right) && buffersEqual(left, right)
     );
   }
-  if (left instanceof Date || right instanceof Date) {
+  if (isExactDate(left) || isExactDate(right)) {
     return (
-      left instanceof Date &&
-      right instanceof Date &&
-      left.getTime() === right.getTime()
+      isExactDate(left) &&
+      isExactDate(right) &&
+      DATE_GET_TIME.call(left) === DATE_GET_TIME.call(right)
     );
   }
   if (Array.isArray(left) || Array.isArray(right)) {
@@ -751,10 +797,10 @@ function graphValuesEqual(
       )
     );
   }
-  if (left instanceof Map || right instanceof Map) {
-    if (!(left instanceof Map) || !(right instanceof Map)) return false;
-    const leftEntries = [...left];
-    const rightEntries = [...right];
+  if (isExactMap(left) || isExactMap(right)) {
+    if (!isExactMap(left) || !isExactMap(right)) return false;
+    const leftEntries = [...MAP_ENTRIES.call(left)];
+    const rightEntries = [...MAP_ENTRIES.call(right)];
     return (
       leftEntries.length === rightEntries.length &&
       leftEntries.every(([key, value], index) => {
@@ -766,10 +812,10 @@ function graphValuesEqual(
       })
     );
   }
-  if (left instanceof Set || right instanceof Set) {
-    if (!(left instanceof Set) || !(right instanceof Set)) return false;
-    const leftItems = [...left];
-    const rightItems = [...right];
+  if (isExactSet(left) || isExactSet(right)) {
+    if (!isExactSet(left) || !isExactSet(right)) return false;
+    const leftItems = [...SET_VALUES.call(left)];
+    const rightItems = [...SET_VALUES.call(right)];
     return (
       leftItems.length === rightItems.length &&
       leftItems.every((item, index) =>
@@ -804,14 +850,17 @@ function reconcileMetadata(
   if (!isMap(document.contents)) return new Document(metadata);
 
   const map: YAMLMap = document.contents;
-  const replacedKeys = new Set(
-    Object.keys(parsed.original).filter(
+  const replacedKeys = new Set([
+    ...Object.keys(parsed.original).filter(
       (key) =>
         !Object.hasOwn(metadata, key) ||
         !metadataValuesEqual(parsed.original[key], metadata[key])
-    )
-  );
-  if (sharesObjectsAcrossFields(metadata, replacedKeys)) {
+    ),
+    ...Object.keys(metadata).filter(
+      (key) => !Object.hasOwn(parsed.original, key)
+    ),
+  ]);
+  if (changedFieldsShareObjects(metadata, replacedKeys)) {
     throw new Error('Cannot safely serialize modified aliased YAML fields');
   }
 
@@ -853,6 +902,9 @@ function setMetadataValue(
     isNode(source) && 'tag' in source && typeof source.tag === 'string'
       ? source.tag
       : undefined;
+  if (tag !== undefined && !isCompatibleTaggedValue(tag, value)) {
+    throw new Error(`Cannot safely change tagged YAML field: ${key}`);
+  }
   if (
     containsMap(value, new WeakSet<object>()) &&
     tag !== 'tag:yaml.org,2002:omap' &&
@@ -872,16 +924,79 @@ function setMetadataValue(
   map.set(key, replacement);
 }
 
+function isCompatibleTaggedValue(tag: string, value: unknown): boolean {
+  switch (tag) {
+    case 'tag:yaml.org,2002:binary':
+      return isExactBuffer(value);
+    case 'tag:yaml.org,2002:bool':
+      return typeof value === 'boolean';
+    case 'tag:yaml.org,2002:float':
+      return typeof value === 'number';
+    case 'tag:yaml.org,2002:int':
+      return typeof value === 'bigint';
+    case 'tag:yaml.org,2002:map':
+      return isExactMap(value) || isPlainObject(value);
+    case 'tag:yaml.org,2002:null':
+      return value === null;
+    case 'tag:yaml.org,2002:omap':
+      return isExactMap(value);
+    case 'tag:yaml.org,2002:pairs':
+      return (
+        Array.isArray(value) &&
+        Object.getPrototypeOf(value) === Array.prototype &&
+        value.every(isCompatiblePair)
+      );
+    case 'tag:yaml.org,2002:seq':
+      return (
+        Array.isArray(value) && Object.getPrototypeOf(value) === Array.prototype
+      );
+    case 'tag:yaml.org,2002:set':
+      return isExactSet(value);
+    case 'tag:yaml.org,2002:str':
+      return typeof value === 'string';
+    case 'tag:yaml.org,2002:timestamp':
+      return isExactDate(value);
+    default:
+      return false;
+  }
+}
+
+function isCompatiblePair(value: unknown): boolean {
+  if (isExactMap(value)) {
+    return [...MAP_ENTRIES.call(value)].length === 1;
+  }
+  return isPlainObject(value) && Object.keys(value).length === 1;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return (
+    value !== null &&
+    typeof value === 'object' &&
+    Object.getPrototypeOf(value) === Object.prototype
+  );
+}
+
 function serializePairs(value: unknown, field: string): unknown {
   if (!Array.isArray(value)) return value;
   return value.map((pair: unknown) => {
-    if (!(pair instanceof Map)) return pair;
-    if ([...pair.keys()].some((key) => typeof key !== 'string')) {
+    if (!isExactMap(pair)) return pair;
+    if ([...MAP_ENTRIES.call(pair)].some(([key]) => typeof key !== 'string')) {
       throw new Error(
         `Cannot safely serialize modified YAML pairs for field: ${field}`
       );
     }
-    return Object.fromEntries<unknown>(pair);
+    const serialized = Object.fromEntries<unknown>([]);
+    for (const [key, item] of MAP_ENTRIES.call(pair)) {
+      if (typeof key === 'string') {
+        Object.defineProperty(serialized, key, {
+          configurable: true,
+          enumerable: true,
+          value: item,
+          writable: true,
+        });
+      }
+    }
+    return serialized;
   });
 }
 
@@ -889,25 +1004,27 @@ function containsMap(value: unknown, visited: WeakSet<object>): boolean {
   if (value === null || typeof value !== 'object' || visited.has(value)) {
     return false;
   }
-  if (value instanceof Map) return true;
+  if (isExactMap(value)) return true;
   visited.add(value);
   if (Array.isArray(value)) {
     return value.some((item) => containsMap(item, visited));
   }
-  if (value instanceof Set) {
-    return [...value].some((item) => containsMap(item, visited));
+  if (isExactSet(value)) {
+    return [...SET_VALUES.call(value)].some((item) =>
+      containsMap(item, visited)
+    );
   }
   return Object.keys(value).some((key) =>
     containsMap(Reflect.get(value, key), visited)
   );
 }
 
-function sharesObjectsAcrossFields(
+function changedFieldsShareObjects(
   metadata: Metadata,
-  fields: ReadonlySet<string>
+  changedFields: ReadonlySet<string>
 ): boolean {
   const owners = new WeakMap<object, string>();
-  for (const field of fields) {
+  for (const field of Object.keys(metadata)) {
     const value = metadata[field];
     if (value === null || typeof value !== 'object') continue;
     const objects = new Set<object>();
@@ -916,7 +1033,13 @@ function sharesObjectsAcrossFields(
     });
     for (const object of objects) {
       const owner = owners.get(object);
-      if (owner !== undefined && owner !== field) return true;
+      if (
+        owner !== undefined &&
+        owner !== field &&
+        (changedFields.has(owner) || changedFields.has(field))
+      ) {
+        return true;
+      }
       owners.set(object, field);
     }
   }
@@ -970,7 +1093,9 @@ function preserveAliasesOfReplacedValue(
     plans.some(
       ({ value }) =>
         containsAlias(value) &&
-        (key !== 'Blocked-By' || !aliasesResolveToScalars(document, value))
+        (key !== 'Blocked-By' ||
+          hasExplicitTag(value) ||
+          !aliasesResolveToScalars(document, value))
     )
   ) {
     throw new Error('Cannot safely preserve nested YAML alias relationships');
@@ -1025,6 +1150,10 @@ function plansShareAnchoredSubtree(
   );
 }
 
+function hasExplicitTag(value: Scalar | YAMLMap | YAMLSeq): boolean {
+  return 'tag' in value && typeof value.tag === 'string';
+}
+
 function aliasesResolveToScalars(
   document: Document<Node, boolean>,
   value: Scalar | YAMLMap | YAMLSeq
@@ -1068,12 +1197,9 @@ function preserveExternalAliases(
     },
   });
   const anchor = uniqueAnchor(`${source}-preserved`, anchors);
-  const tag =
-    'tag' in value && typeof value.tag === 'string' ? value.tag : null;
-  const preserved =
-    tag === null
-      ? document.createNode(value.toJS(document))
-      : document.createNode(value.toJS(document), { tag });
+  const preserved = containsAlias(value)
+    ? document.createNode(value.toJS(document))
+    : value.clone();
   if (!isScalar(preserved) && !isMap(preserved) && !isSeq(preserved)) return;
   preserved.anchor = anchor;
   let first = true;
