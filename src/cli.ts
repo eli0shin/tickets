@@ -19,10 +19,13 @@ import {
   type SelectProjectOptions,
 } from './git.ts';
 import {
+  confirmOverwrite,
   formatProjectSelectionFailure,
   writeDiagnostic,
   writeLint,
   writeMutation,
+  writeStderr,
+  writeStdout,
   writeSuccess,
   writeTicketMutation,
 } from './output.ts';
@@ -32,11 +35,7 @@ import {
   isTicketReference,
   type DocumentDiagnostic,
 } from './tracker/index.ts';
-import {
-  confirmOverwrite,
-  installSkill,
-  type ConfirmOverwrite,
-} from './skill.ts';
+import { installSkill, type ConfirmOverwrite } from './skill.ts';
 
 type ProjectRepositoriesOutcome =
   | { readonly ok: true; readonly value: readonly ProjectRepository[] }
@@ -54,6 +53,7 @@ export function createProgram({
   cwd = process.cwd(),
 }: CliDependencies = {}): Command {
   const program = new Command()
+    .configureOutput({ writeOut: writeStdout, writeErr: writeStderr })
     .exitOverride()
     .showSuggestionAfterError(false)
     .name('tickets')

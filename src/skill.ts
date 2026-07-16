@@ -1,7 +1,6 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { resolve } from 'node:path';
-import { createInterface } from 'node:readline/promises';
 import bundledSkill from '../assets/tickets/SKILL.md' with { type: 'text' };
 
 export type ConfirmOverwrite = (installedPath: string) => Promise<boolean>;
@@ -18,29 +17,11 @@ type InstallSkillOptions = {
   confirmOverwrite?: ConfirmOverwrite;
 };
 
-export async function confirmOverwrite(
-  installedPath: string
-): Promise<boolean> {
-  const prompt = createInterface({
-    input: process.stdin,
-    output: process.stderr,
-  });
-
-  try {
-    const answer = await prompt.question(
-      `${installedPath} already exists. Overwrite? [y/N] `
-    );
-    return ['y', 'yes'].includes(answer.trim().toLowerCase());
-  } finally {
-    prompt.close();
-  }
-}
-
 export async function installSkill({
   target = resolve(homedir(), '.agents/skills/tickets'),
   force = false,
   interactive = Boolean(process.stdin.isTTY && process.stderr.isTTY),
-  confirmOverwrite: confirm = confirmOverwrite,
+  confirmOverwrite: confirm,
 }: InstallSkillOptions = {}): Promise<SkillInstallationResult> {
   const targetDirectory = resolve(target);
   const installedPath = resolve(targetDirectory, 'SKILL.md');
@@ -67,6 +48,10 @@ export async function installSkill({
         status: 'error',
         message: `${installedPath} already exists; use --force to overwrite it`,
       };
+    }
+
+    if (confirm === undefined) {
+      throw new Error('Interactive confirmation is not configured');
     }
 
     if (!(await confirm(installedPath))) {

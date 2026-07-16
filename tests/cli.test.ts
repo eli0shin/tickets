@@ -10,6 +10,7 @@ const repositoryRoot = join(import.meta.dir, '..');
 const assetPath = join(repositoryRoot, 'assets/tickets/SKILL.md');
 let temporaryDirectory: string;
 let executablePath: string;
+let interactiveExecutablePath: string;
 
 const helpOutput = `Usage: tickets [options] [command]
 
@@ -47,15 +48,17 @@ type ProcessResult = {
 type RunOptions = {
   cwd?: string;
   env?: Record<string, string>;
+  stdin?: string;
 };
 
 async function run(
   command: string[],
-  { cwd = repositoryRoot, env }: RunOptions = {}
+  { cwd = repositoryRoot, env, stdin }: RunOptions = {}
 ): Promise<ProcessResult> {
   const process = Bun.spawn(command, {
     cwd,
     env: env ? { ...processEnv(), ...env } : undefined,
+    stdin: stdin === undefined ? undefined : new Blob([stdin]),
     stdout: 'pipe',
     stderr: 'pipe',
   });
@@ -113,24 +116,50 @@ async function git(cwd: string, arguments_: string[]): Promise<void> {
   if (result.exitCode !== 0) throw new Error(result.stderr);
 }
 
+async function sourceFilesMatching(pattern: RegExp): Promise<string[]> {
+  const matches: string[] = [];
+  for await (const sourceFile of new Bun.Glob('src/**/*.ts').scan({
+    cwd: repositoryRoot,
+  })) {
+    const source = await readFile(join(repositoryRoot, sourceFile), 'utf8');
+    if (pattern.test(source)) matches.push(sourceFile);
+  }
+  return matches;
+}
+
 beforeAll(async () => {
   temporaryDirectory = await mkdtemp(join(tmpdir(), 'tickets-packaging-'));
   executablePath = join(temporaryDirectory, 'tickets');
+  interactiveExecutablePath = join(temporaryDirectory, 'tickets-interactive');
 
-  const result = await run([
-    'bun',
-    'build',
-    'src/cli.ts',
-    '--compile',
-    `--outfile=${executablePath}`,
-  ]);
-  if (result.exitCode !== 0) {
-    throw new Error(`Could not build tickets executable:\n${result.stderr}`);
+  for (const [source, output] of [
+    ['src/cli.ts', executablePath],
+    ['tests/fixtures/interactive-cli.ts', interactiveExecutablePath],
+  ]) {
+    const result = await run([
+      'bun',
+      'build',
+      source,
+      '--compile',
+      `--outfile=${output}`,
+    ]);
+    if (result.exitCode !== 0) {
+      throw new Error(`Could not build ${source}:\n${result.stderr}`);
+    }
   }
 }, 120_000);
 
 afterAll(async () => {
   await rm(temporaryDirectory, { force: true, recursive: true });
+});
+
+test('output.ts is the sole source output boundary', async () => {
+  expect(
+    await sourceFilesMatching(/process\.(?:stdout|stderr)\.write/u)
+  ).toEqual(['src/output.ts']);
+  expect(await sourceFilesMatching(/from 'node:readline\/promises'/u)).toEqual([
+    'src/output.ts',
+  ]);
 });
 
 describe.each([
@@ -925,45 +954,45 @@ describe('resource creation commands', () => {
   });
 });
 
-test('an interactive decline preserves the skill and exits successfully', async () => {
-  const target = join(temporaryDirectory, 'decline', 'tickets');
-  const installedPath = join(target, 'SKILL.md');
-  await mkdir(target, { recursive: true });
-  await writeFile(installedPath, 'keep me');
+describe.each([
+  ['Bun entry point', () => ['bun', 'tests/fixtures/interactive-cli.ts']],
+  ['native executable', () => [interactiveExecutablePath]],
+])('%s interactive prompt', (_name, getCommand) => {
+  test('a decline preserves the skill and exits successfully', async () => {
+    const target = join(temporaryDirectory, `${_name}-decline`, 'tickets');
+    const installedPath = join(target, 'SKILL.md');
+    await mkdir(target, { recursive: true });
+    await writeFile(installedPath, 'keep me');
 
-  expect(
-    await run([
-      'bun',
-      'tests/fixtures/interactive-cli.ts',
-      'skill',
-      'install',
-      '--target',
-      target,
-    ])
-  ).toEqual({ stdout: '', stderr: '', exitCode: 0 });
-  expect(await readFile(installedPath, 'utf8')).toBe('keep me');
-});
+    expect(
+      await run([...getCommand(), 'skill', 'install', '--target', target], {
+        stdin: '\n',
+      })
+    ).toEqual({
+      stdout: '',
+      stderr: `${installedPath} already exists. Overwrite? [y/N] `,
+      exitCode: 0,
+    });
+    expect(await readFile(installedPath, 'utf8')).toBe('keep me');
+  });
 
-test('an interactive confirmation replaces the skill', async () => {
-  const target = join(temporaryDirectory, 'confirm', 'tickets');
-  const installedPath = join(target, 'SKILL.md');
-  await mkdir(target, { recursive: true });
-  await writeFile(installedPath, 'old skill');
+  test('a confirmation replaces the skill', async () => {
+    const target = join(temporaryDirectory, `${_name}-confirm`, 'tickets');
+    const installedPath = join(target, 'SKILL.md');
+    await mkdir(target, { recursive: true });
+    await writeFile(installedPath, 'old skill');
 
-  expect(
-    await run(
-      [
-        'bun',
-        'tests/fixtures/interactive-cli.ts',
-        'skill',
-        'install',
-        '--target',
-        target,
-      ],
-      { env: { TICKETS_TEST_CONFIRM: 'yes' } }
-    )
-  ).toEqual({ stdout: `${installedPath}\n`, stderr: '', exitCode: 0 });
-  expect(await readFile(installedPath)).toEqual(await readFile(assetPath));
+    expect(
+      await run([...getCommand(), 'skill', 'install', '--target', target], {
+        stdin: 'yes\n',
+      })
+    ).toEqual({
+      stdout: `${installedPath}\n`,
+      stderr: `${installedPath} already exists. Overwrite? [y/N] `,
+      exitCode: 0,
+    });
+    expect(await readFile(installedPath)).toEqual(await readFile(assetPath));
+  });
 });
 
 describe.each([
