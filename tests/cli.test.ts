@@ -328,6 +328,98 @@ test('lint reports selection failures only on stderr with exit status 2', async 
   });
 });
 
+test('broken references fail only when followed and do not block unrelated operations', async () => {
+  const workspace = join(temporaryDirectory, 'broken-reference-boundary');
+  const alphaPath = join(workspace, 'alpha-project');
+  const alphaTodo = join(alphaPath, 'todo');
+  const betaPath = join(workspace, 'beta-project');
+  const betaTodo = join(betaPath, 'todo');
+  const brokenPath = join(alphaTodo, '001-broken-metadata.md');
+  const healthyPath = join(alphaTodo, '002-healthy.md');
+  const brokenSource =
+    '---\nAssigned-To:\nTags: [broken]\nParent: 999-local-only\nBlocked-By: [beta-project/998-cross-project-missing]\n---\nBroken references remain visible\n';
+  const healthySource =
+    '---\nAssigned-To:\nTags: [healthy]\nParent:\nBlocked-By: []\n---\nHealthy ticket\n';
+  const peerSource =
+    '---\nAssigned-To:\nTags: []\nParent:\nBlocked-By: []\n---\nPeer ticket\n';
+  await Promise.all([
+    mkdir(join(alphaPath, 'done'), { recursive: true }),
+    mkdir(alphaTodo, { recursive: true }),
+    mkdir(betaTodo, { recursive: true }),
+  ]);
+  await Promise.all([
+    writeFile(
+      join(alphaPath, 'project.md'),
+      '---\nDefault-Status: todo\nGit-Repo:\n---\n'
+    ),
+    writeFile(
+      join(betaPath, 'project.md'),
+      '---\nDefault-Status: todo\nGit-Repo:\n---\n'
+    ),
+    writeFile(brokenPath, brokenSource),
+    writeFile(healthyPath, healthySource),
+    writeFile(join(betaTodo, '999-local-only.md'), peerSource),
+  ]);
+  const cli = ['bun', 'src/cli.ts', '--workspace', workspace];
+  const alpha = [...cli, '--project', 'alpha-project'];
+
+  expect(await run([...alpha, 'show', '999-local-only'])).toEqual({
+    stdout: '',
+    stderr: 'Ticket not found: 999-local-only\n',
+    exitCode: 2,
+  });
+  expect(
+    await run([...cli, 'show', 'beta-project/998-cross-project-missing'])
+  ).toEqual({
+    stdout: '',
+    stderr: 'Ticket not found: beta-project/998-cross-project-missing\n',
+    exitCode: 2,
+  });
+
+  expect(await run([...alpha, 'show', '002-healthy'])).toEqual({
+    stdout: healthySource,
+    stderr: '',
+    exitCode: 0,
+  });
+  expect(await run([...alpha, 'list', 'todo'])).toEqual({
+    stdout: `todo\t001-broken-metadata\t${brokenPath}\ntodo\t002-healthy\t${healthyPath}\n`,
+    stderr: '',
+    exitCode: 0,
+  });
+  expect(await run([...alpha, 'search', '--tag', 'healthy'])).toEqual({
+    stdout: `todo\t002-healthy\t${healthyPath}\n`,
+    stderr: '',
+    exitCode: 0,
+  });
+
+  const createdPath = join(alphaTodo, '003-created.md');
+  expect(await run([...alpha, 'create', 'created'])).toEqual({
+    stdout: `${createdPath}\n`,
+    stderr: '',
+    exitCode: 0,
+  });
+  const renamedPath = join(alphaTodo, '002-renamed.md');
+  expect(await run([...alpha, 'rename', '002-healthy', 'renamed'])).toEqual({
+    stdout: `${renamedPath}\n`,
+    stderr: '',
+    exitCode: 0,
+  });
+  expect(await readFile(brokenPath, 'utf8')).toBe(brokenSource);
+
+  expect(await run([...alpha, 'lint'])).toEqual({
+    stdout:
+      `${brokenPath}\tbroken-blocker-reference\tBlocker reference does not resolve to exactly one ticket: beta-project/998-cross-project-missing\n` +
+      `${brokenPath}\tbroken-parent-reference\tParent reference does not resolve to exactly one ticket: 999-local-only\n`,
+    stderr: '',
+    exitCode: 1,
+  });
+  expect(await run([...cli, '--project', 'beta-project', 'lint'])).toEqual({
+    stdout: '',
+    stderr: '',
+    exitCode: 0,
+  });
+}, 20_000);
+
 describe('read-only commands', () => {
   test('uses createProgram configured cwd for Git project selection', async () => {
     const repository = await mkdtemp(
