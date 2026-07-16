@@ -1,5 +1,7 @@
 import { createInterface } from 'node:readline/promises';
 import type { ProjectSelection } from './git.ts';
+import type { SkillInstallationResult } from './skill.ts';
+import type { CommandFailure, CommandOutcome } from './types.ts';
 import type {
   DocumentDiagnostic,
   LintViolation,
@@ -50,6 +52,32 @@ export async function confirmOverwrite(
   }
 }
 
+export function writeCommandFailure(failure: CommandFailure): void {
+  switch (failure.kind) {
+    case 'message':
+      writeDiagnostic(failure.message);
+      break;
+    case 'diagnostic':
+      writeDiagnostic(failure.diagnostic.message);
+      break;
+    case 'project-selection':
+      writeDiagnostic(formatProjectSelectionFailure(failure.failure));
+      break;
+  }
+  process.exitCode = 2;
+}
+
+export function writeCommandOutcome<Value>(
+  outcome: CommandOutcome<Value>,
+  writeValue: (value: Value) => void
+): void {
+  if (outcome.ok) {
+    writeValue(outcome.value);
+    return;
+  }
+  writeCommandFailure(outcome.failure);
+}
+
 export function formatProjectSelectionFailure(
   failure: ProjectSelectionFailure
 ): string {
@@ -81,6 +109,38 @@ export function writeLint(
   for (const violation of violations) {
     writeStdout(`${violation.path}\t${violation.code}\t${violation.message}\n`);
   }
+}
+
+export function writeLintOutcome(
+  project: string,
+  outcome:
+    | { readonly ok: true; readonly violations: readonly LintViolation[] }
+    | {
+        readonly ok: false;
+        readonly diagnostic: { readonly message: string };
+      },
+  json: boolean
+): void {
+  if (!outcome.ok) {
+    writeDiagnostic(outcome.diagnostic.message);
+    process.exitCode = 2;
+    return;
+  }
+  writeLint(project, outcome.violations, json);
+  if (outcome.violations.length > 0) process.exitCode = 1;
+}
+
+export function writeSkillInstallation(result: SkillInstallationResult): void {
+  if (result.status === 'installed') {
+    writeSuccess(result.path);
+  } else if (result.status === 'error') {
+    writeDiagnostic(result.message);
+    process.exitCode = 2;
+  }
+}
+
+export function assignUsageExitCode(exitCode: number): void {
+  if (exitCode !== 0) process.exitCode = 2;
 }
 
 export function writeDiagnostics(
@@ -125,7 +185,18 @@ export function writeStatusList(
   writeRecords(statuses.map((status) => [status.name, status.path]));
 }
 
-export function writeTicketQuery(result: QueryResult, json: boolean): void {
+export function writeTicketQueryResult(
+  result: QueryResult,
+  json: boolean
+): void {
+  writeTicketQuery(result, json);
+  if (result.diagnostics.length > 0) {
+    writeDiagnostics(result.diagnostics);
+    process.exitCode = 2;
+  }
+}
+
+function writeTicketQuery(result: QueryResult, json: boolean): void {
   if (json) {
     writeJson({
       project: result.project,
