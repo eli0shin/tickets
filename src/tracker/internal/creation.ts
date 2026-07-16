@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { DocumentDiagnostic, Outcome } from './documents.ts';
 import { readTrackerDocument, writeNewTrackerDocument } from './documents.ts';
@@ -130,12 +130,20 @@ async function createTicketWithLockHeld(
   input: CreateTicketInput,
   lock: CreationLock
 ): Promise<Outcome<Ticket>> {
+  const heartbeat = setInterval(() => {
+    const now = new Date();
+    void utimes(lock.ownerPath, now, now).catch(() => undefined);
+  }, 1_000);
+  heartbeat.unref();
+
   return createTicketWhileLocked(project, selectedStatus, input).then(
     async (result) => {
+      clearInterval(heartbeat);
       const release = await releaseCreationLock(lock);
       return release.ok ? result : release;
     },
     async (error: unknown) => {
+      clearInterval(heartbeat);
       const release = await releaseCreationLock(lock);
       if (!release.ok) return release;
       throw error;
@@ -251,14 +259,11 @@ async function removeStaleCreationLock(
   try {
     const ownerPath = join(lockPath, CREATION_LOCK_OWNER);
     const owner = await readCreationLockOwner(ownerPath);
-    if (owner !== null && processIsRunning(owner.pid)) {
+    const ownership = await stat(owner === null ? lockPath : ownerPath);
+    const recentlyActive =
+      Date.now() - ownership.mtimeMs <= CREATION_LOCK_STALE_AFTER_MS;
+    if (recentlyActive && (owner === null || processIsRunning(owner.pid))) {
       return { ok: true, value: undefined };
-    }
-    if (owner === null) {
-      const lock = await stat(lockPath);
-      if (Date.now() - lock.mtimeMs <= CREATION_LOCK_STALE_AFTER_MS) {
-        return { ok: true, value: undefined };
-      }
     }
     await rm(lockPath, { recursive: true });
     return { ok: true, value: undefined };

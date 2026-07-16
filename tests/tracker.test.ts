@@ -937,6 +937,30 @@ describe('tracker resource creation', () => {
     expect(await readdir(lockPath)).toEqual(['owner.json']);
   });
 
+  test('recovers a stale owner record when its PID has been reused', async () => {
+    const workspaceRoot = await temporaryWorkspace();
+    const tracker = createTracker(workspaceRoot);
+    await tracker.createProject('alpha-project');
+    const lockPath = join(
+      workspaceRoot,
+      'alpha-project',
+      '.ticket-creation-lock'
+    );
+    const ownerPath = join(lockPath, 'owner.json');
+    await mkdir(lockPath);
+    await writeFile(
+      ownerPath,
+      `${JSON.stringify({ token: 'old-process', pid: process.pid })}\n`
+    );
+    const staleTime = new Date(Date.now() - 60_000);
+    await utimes(ownerPath, staleTime, staleTime);
+
+    const outcome = await tracker.createTicket('alpha-project', {
+      description: 'after-pid-reuse',
+    });
+    expect(outcome.ok).toBe(true);
+  });
+
   test('requires a valid declared default status even with an override', async () => {
     const workspaceRoot = await temporaryWorkspace();
     const tracker = createTracker(workspaceRoot);
