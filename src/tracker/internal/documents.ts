@@ -32,6 +32,7 @@ type ParsedMetadata = {
 };
 
 const parsedMetadata = new WeakMap<object, ParsedMetadata>();
+const parsedValues = new WeakMap<object, Set<ParsedMetadata>>();
 
 export type DocumentDiagnosticCode =
   | 'duplicate-project-key'
@@ -138,7 +139,10 @@ export function parseTrackerDocument(
       },
     };
   }
-  parsedMetadata.set(metadata, { document, original: { ...metadata } });
+  registerParsedMetadata(metadata, {
+    document,
+    original: snapshotMetadata(metadata),
+  });
   return {
     ok: true,
     value: {
@@ -164,8 +168,8 @@ export function replaceTrackerMetadata(
   document: TrackerDocument,
   metadata: Metadata
 ): TrackerDocument {
-  const parsed = parsedMetadata.get(document.metadata);
-  if (parsed !== undefined) parsedMetadata.set(metadata, parsed);
+  const parsed = findParsedMetadata(document.metadata);
+  if (parsed !== undefined) registerParsedMetadata(metadata, parsed);
   return { ...document, metadata };
 }
 
@@ -291,6 +295,134 @@ function isMetadata(value: unknown): value is Record<string, unknown> {
   );
 }
 
+function registerParsedMetadata(
+  metadata: Metadata,
+  parsed: ParsedMetadata
+): void {
+  parsedMetadata.set(metadata, parsed);
+  visitObjectGraph(metadata, (value) => {
+    const contexts = parsedValues.get(value) ?? new Set<ParsedMetadata>();
+    contexts.add(parsed);
+    parsedValues.set(value, contexts);
+  });
+}
+
+function findParsedMetadata(metadata: Metadata): ParsedMetadata | undefined {
+  const direct = parsedMetadata.get(metadata);
+  if (direct !== undefined) return direct;
+
+  const contexts = new Set<ParsedMetadata>();
+  visitObjectGraph(metadata, (value) => {
+    for (const parsed of parsedValues.get(value) ?? []) contexts.add(parsed);
+  });
+  if (contexts.size !== 1) return undefined;
+
+  const parsed = contexts.values().next().value;
+  if (parsed !== undefined) registerParsedMetadata(metadata, parsed);
+  return parsed;
+}
+
+function visitObjectGraph(
+  root: object,
+  visitValue: (value: object) => void
+): void {
+  const pending: object[] = [root];
+  const visited = new WeakSet<object>();
+  while (pending.length > 0) {
+    const value = pending.pop();
+    if (value === undefined || visited.has(value)) continue;
+    visited.add(value);
+    visitValue(value);
+
+    if (isUnknownMap(value)) {
+      for (const [key, item] of value) {
+        if (key !== null && typeof key === 'object') pending.push(key);
+        if (item !== null && typeof item === 'object') pending.push(item);
+      }
+    } else if (isUnknownSet(value)) {
+      for (const item of value) {
+        if (item !== null && typeof item === 'object') pending.push(item);
+      }
+    } else {
+      for (const key of Object.keys(value)) {
+        const item: unknown = Reflect.get(value, key);
+        if (item !== null && typeof item === 'object') pending.push(item);
+      }
+    }
+  }
+}
+
+function isUnknownMap(value: object): value is Map<unknown, unknown> {
+  return value instanceof Map;
+}
+
+function isUnknownSet(value: object): value is Set<unknown> {
+  return value instanceof Set;
+}
+
+function snapshotMetadata(metadata: Metadata): Metadata {
+  const snapshot = snapshotValue(metadata, new WeakMap<object, unknown>());
+  if (!isMetadata(snapshot)) throw new Error('Metadata snapshot must be a map');
+  return snapshot;
+}
+
+function snapshotValue(
+  value: unknown,
+  snapshots: WeakMap<object, unknown>
+): unknown {
+  if (value === null || typeof value !== 'object') return value;
+  const existing = snapshots.get(value);
+  if (existing !== undefined) return existing;
+
+  if (Buffer.isBuffer(value)) {
+    const snapshot = Buffer.from(value);
+    snapshots.set(value, snapshot);
+    return snapshot;
+  }
+  if (value instanceof Date) {
+    const snapshot = new Date(value.getTime());
+    snapshots.set(value, snapshot);
+    return snapshot;
+  }
+  if (Array.isArray(value)) {
+    const snapshot: unknown[] = [];
+    snapshots.set(value, snapshot);
+    snapshot.push(...value.map((item) => snapshotValue(item, snapshots)));
+    return snapshot;
+  }
+  if (value instanceof Map) {
+    const snapshot = new Map<unknown, unknown>();
+    snapshots.set(value, snapshot);
+    for (const [key, item] of value) {
+      snapshot.set(
+        snapshotValue(key, snapshots),
+        snapshotValue(item, snapshots)
+      );
+    }
+    return snapshot;
+  }
+  if (value instanceof Set) {
+    const snapshot = new Set<unknown>();
+    snapshots.set(value, snapshot);
+    for (const item of value) snapshot.add(snapshotValue(item, snapshots));
+    return snapshot;
+  }
+  if (Object.getPrototypeOf(value) === Object.prototype) {
+    const snapshot = Object.fromEntries<unknown>([]);
+    snapshots.set(value, snapshot);
+    for (const key of Object.keys(value)) {
+      Object.defineProperty(snapshot, key, {
+        configurable: true,
+        enumerable: true,
+        value: snapshotValue(Reflect.get(value, key), snapshots),
+        writable: true,
+      });
+    }
+    return snapshot;
+  }
+  return value;
+}
+
 function convertToMetadata(
   document: ReturnType<typeof parseDocument>,
   path: string,
@@ -399,7 +531,7 @@ function serializeDocument(
   document: TrackerDocument
 ): Outcome<string> {
   try {
-    const parsed = parsedMetadata.get(document.metadata);
+    const parsed = findParsedMetadata(document.metadata);
     if (
       Object.getPrototypeOf(document.metadata) !== Object.prototype ||
       (parsed === undefined &&
@@ -476,6 +608,106 @@ function isSerializableValue(
   return valid;
 }
 
+function metadataValuesEqual(left: unknown, right: unknown): boolean {
+  return graphValuesEqual(
+    left,
+    right,
+    new WeakMap<object, object>(),
+    new WeakMap<object, object>()
+  );
+}
+
+function graphValuesEqual(
+  left: unknown,
+  right: unknown,
+  leftToRight: WeakMap<object, object>,
+  rightToLeft: WeakMap<object, object>
+): boolean {
+  if (Object.is(left, right)) return true;
+  if (
+    left === null ||
+    right === null ||
+    typeof left !== 'object' ||
+    typeof right !== 'object'
+  ) {
+    return false;
+  }
+
+  const knownRight = leftToRight.get(left);
+  const knownLeft = rightToLeft.get(right);
+  if (knownRight !== undefined || knownLeft !== undefined) {
+    return knownRight === right && knownLeft === left;
+  }
+  leftToRight.set(left, right);
+  rightToLeft.set(right, left);
+
+  if (Buffer.isBuffer(left) || Buffer.isBuffer(right)) {
+    return (
+      Buffer.isBuffer(left) && Buffer.isBuffer(right) && left.equals(right)
+    );
+  }
+  if (left instanceof Date || right instanceof Date) {
+    return (
+      left instanceof Date &&
+      right instanceof Date &&
+      left.getTime() === right.getTime()
+    );
+  }
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return (
+      Array.isArray(left) &&
+      Array.isArray(right) &&
+      left.length === right.length &&
+      left.every((item, index) =>
+        graphValuesEqual(item, right[index], leftToRight, rightToLeft)
+      )
+    );
+  }
+  if (left instanceof Map || right instanceof Map) {
+    if (!(left instanceof Map) || !(right instanceof Map)) return false;
+    const leftEntries = [...left];
+    const rightEntries = [...right];
+    return (
+      leftEntries.length === rightEntries.length &&
+      leftEntries.every(([key, value], index) => {
+        const rightEntry = rightEntries[index];
+        return (
+          graphValuesEqual(key, rightEntry[0], leftToRight, rightToLeft) &&
+          graphValuesEqual(value, rightEntry[1], leftToRight, rightToLeft)
+        );
+      })
+    );
+  }
+  if (left instanceof Set || right instanceof Set) {
+    if (!(left instanceof Set) || !(right instanceof Set)) return false;
+    const leftItems = [...left];
+    const rightItems = [...right];
+    return (
+      leftItems.length === rightItems.length &&
+      leftItems.every((item, index) =>
+        graphValuesEqual(item, rightItems[index], leftToRight, rightToLeft)
+      )
+    );
+  }
+
+  const leftKeys = Object.keys(left);
+  const rightKeys = Object.keys(right);
+  return (
+    Object.getPrototypeOf(left) === Object.getPrototypeOf(right) &&
+    leftKeys.length === rightKeys.length &&
+    leftKeys.every(
+      (key, index) =>
+        key === rightKeys[index] &&
+        graphValuesEqual(
+          Reflect.get(left, key),
+          Reflect.get(right, key),
+          leftToRight,
+          rightToLeft
+        )
+    )
+  );
+}
+
 function reconcileMetadata(
   parsed: ParsedMetadata,
   metadata: Metadata
@@ -488,9 +720,13 @@ function reconcileMetadata(
     Object.keys(parsed.original).filter(
       (key) =>
         !Object.hasOwn(metadata, key) ||
-        !Object.is(parsed.original[key], metadata[key])
+        !metadataValuesEqual(parsed.original[key], metadata[key])
     )
   );
+  if (sharesObjectsAcrossFields(metadata, replacedKeys)) {
+    throw new Error('Cannot safely serialize modified aliased YAML fields');
+  }
+
   const replacedAliases = aliasesWithinFields(map, replacedKeys);
   for (const key of replacedKeys) {
     preserveAliasesOfReplacedValue(document, map, key, replacedAliases);
@@ -505,9 +741,98 @@ function reconcileMetadata(
     }
   }
   for (const [key, value] of Object.entries(metadata)) {
-    if (!Object.is(parsed.original[key], value)) map.set(key, value);
+    if (
+      !Object.hasOwn(parsed.original, key) ||
+      !metadataValuesEqual(parsed.original[key], value)
+    ) {
+      setMetadataValue(document, map, key, value);
+    }
   }
   return document;
+}
+
+function setMetadataValue(
+  document: Document<Node, boolean>,
+  map: YAMLMap,
+  key: string,
+  value: unknown
+): void {
+  const pair = map.items.find(
+    (item) => isScalar(item.key) && item.key.value === key
+  );
+  const source = pair?.value;
+  const tag =
+    isNode(source) && 'tag' in source && typeof source.tag === 'string'
+      ? source.tag
+      : undefined;
+  if (
+    containsMap(value, new WeakSet<object>()) &&
+    tag !== 'tag:yaml.org,2002:omap' &&
+    tag !== 'tag:yaml.org,2002:pairs'
+  ) {
+    throw new Error(
+      `Cannot safely serialize modified YAML mappings for field: ${key}`
+    );
+  }
+
+  const serializedValue =
+    tag === 'tag:yaml.org,2002:pairs' ? serializePairs(value, key) : value;
+  const replacement =
+    tag === undefined
+      ? document.createNode(serializedValue)
+      : document.createNode(serializedValue, { tag });
+  map.set(key, replacement);
+}
+
+function serializePairs(value: unknown, field: string): unknown {
+  if (!Array.isArray(value)) return value;
+  return value.map((pair: unknown) => {
+    if (!(pair instanceof Map)) return pair;
+    if ([...pair.keys()].some((key) => typeof key !== 'string')) {
+      throw new Error(
+        `Cannot safely serialize modified YAML pairs for field: ${field}`
+      );
+    }
+    return Object.fromEntries<unknown>(pair);
+  });
+}
+
+function containsMap(value: unknown, visited: WeakSet<object>): boolean {
+  if (value === null || typeof value !== 'object' || visited.has(value)) {
+    return false;
+  }
+  if (value instanceof Map) return true;
+  visited.add(value);
+  if (Array.isArray(value)) {
+    return value.some((item) => containsMap(item, visited));
+  }
+  if (value instanceof Set) {
+    return [...value].some((item) => containsMap(item, visited));
+  }
+  return Object.keys(value).some((key) =>
+    containsMap(Reflect.get(value, key), visited)
+  );
+}
+
+function sharesObjectsAcrossFields(
+  metadata: Metadata,
+  fields: ReadonlySet<string>
+): boolean {
+  const owners = new WeakMap<object, string>();
+  for (const field of fields) {
+    const value = metadata[field];
+    if (value === null || typeof value !== 'object') continue;
+    const objects = new Set<object>();
+    visitObjectGraph(value, (object) => {
+      if (!objects.has(object)) objects.add(object);
+    });
+    for (const object of objects) {
+      const owner = owners.get(object);
+      if (owner !== undefined && owner !== field) return true;
+      owners.set(object, field);
+    }
+  }
+  return false;
 }
 
 function hasExplicitKey(map: YAMLMap, key: string): boolean {

@@ -1104,6 +1104,139 @@ describe('tracker document parsing and canonical writing', () => {
     expect(canonical.includes('negative-zero: -0.0')).toBe(true);
   });
 
+  test('persists in-place nested edits and immutable copies of parsed metadata', async () => {
+    const workspaceRoot = await temporaryWorkspace();
+    const statusPath = join(workspaceRoot, 'alpha-project', 'todo');
+    await mkdir(statusPath, { recursive: true });
+    await writeFile(
+      join(statusPath, '001-ordinary.md'),
+      '---\nUnknown: {nested: {enabled: true}}\n---\n'
+    );
+    await writeFile(
+      join(statusPath, '002-complex.md'),
+      [
+        '---',
+        'Tags: []',
+        'Nested: {? [one, two]: value}',
+        'Pairs: !!pairs [one: 1]',
+        'When: !!timestamp 2002-12-14',
+        '---',
+        '',
+      ].join('\n')
+    );
+
+    const tracker = createTracker(workspaceRoot);
+    const ordinary = await tracker.readTicket(
+      'alpha-project',
+      'todo',
+      '001-ordinary'
+    );
+    if (!ordinary.ok) throw new Error(ordinary.diagnostic.message);
+    const unknown = ordinary.value.metadata.Unknown;
+    if (unknown === null || typeof unknown !== 'object') {
+      throw new Error('Expected unknown metadata map');
+    }
+    const nested: unknown = Reflect.get(unknown, 'nested');
+    if (nested === null || typeof nested !== 'object') {
+      throw new Error('Expected nested metadata map');
+    }
+    Reflect.set(nested, 'enabled', false);
+    expect(
+      await tracker.writeTicket(
+        'alpha-project',
+        'todo',
+        '001-ordinary',
+        ordinary.value
+      )
+    ).toEqual({ ok: true, value: undefined });
+    const rewrittenOrdinary = await tracker.readTicket(
+      'alpha-project',
+      'todo',
+      '001-ordinary'
+    );
+    if (!rewrittenOrdinary.ok) {
+      throw new Error(rewrittenOrdinary.diagnostic.message);
+    }
+    expect(rewrittenOrdinary.value.metadata.Unknown).toEqual({
+      nested: { enabled: false },
+    });
+
+    const complex = await tracker.readTicket(
+      'alpha-project',
+      'todo',
+      '002-complex'
+    );
+    if (!complex.ok) throw new Error(complex.diagnostic.message);
+    const pairs = complex.value.metadata.Pairs;
+    if (!Array.isArray(pairs) || !(pairs[0] instanceof Map)) {
+      throw new Error('Expected YAML pairs metadata');
+    }
+    pairs[0].set('one', 2n);
+    const copied = {
+      ...complex.value,
+      metadata: { ...complex.value.metadata, Tags: ['updated'] },
+    };
+    expect(
+      await tracker.writeTicket('alpha-project', 'todo', '002-complex', copied)
+    ).toEqual({ ok: true, value: undefined });
+    const rewrittenComplex = await tracker.readTicket(
+      'alpha-project',
+      'todo',
+      '002-complex'
+    );
+    if (!rewrittenComplex.ok) {
+      throw new Error(rewrittenComplex.diagnostic.message);
+    }
+    expect(rewrittenComplex.value.metadata.Tags).toEqual(['updated']);
+    expect(rewrittenComplex.value.metadata.Pairs).toEqual([
+      new Map([['one', 2n]]),
+    ]);
+    expect(rewrittenComplex.value.metadata.When).toEqual(
+      new Date('2002-12-14T00:00:00.000Z')
+    );
+  });
+
+  test('leaves aliased fields untouched when a deep edit cannot preserve shared identity', async () => {
+    const workspaceRoot = await temporaryWorkspace();
+    const statusPath = join(workspaceRoot, 'alpha-project', 'todo');
+    const ticketPath = join(statusPath, '001-aliased.md');
+    await mkdir(statusPath, { recursive: true });
+    const source = '---\nA: &shared {value: 1}\nB: *shared\n---\n';
+    await writeFile(ticketPath, source);
+
+    const tracker = createTracker(workspaceRoot);
+    const document = await tracker.readTicket(
+      'alpha-project',
+      'todo',
+      '001-aliased'
+    );
+    if (!document.ok) throw new Error(document.diagnostic.message);
+    const first = document.value.metadata.A;
+    if (first === null || typeof first !== 'object') {
+      throw new Error('Expected aliased metadata map');
+    }
+    Reflect.set(first, 'value', 2n);
+    const outcome = await tracker.writeTicket(
+      'alpha-project',
+      'todo',
+      '001-aliased',
+      document.value
+    );
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) throw new Error('Expected serialization to be refused');
+    expect(outcome.diagnostic.code).toBe('serialization-error');
+    expect(await readFile(ticketPath, 'utf8')).toBe(source);
+
+    const unchanged = await tracker.readTicket(
+      'alpha-project',
+      'todo',
+      '001-aliased'
+    );
+    if (!unchanged.ok) throw new Error(unchanged.diagnostic.message);
+    expect(unchanged.value.metadata.A).toBe(unchanged.value.metadata.B);
+    expect(unchanged.value.metadata.A).toEqual({ value: 1n });
+  });
+
   test('accepts every supported standard YAML tag and preserves complex values', async () => {
     const workspaceRoot = await temporaryWorkspace();
     const statusPath = join(workspaceRoot, 'alpha-project', 'todo');
@@ -1630,7 +1763,7 @@ describe('tracker ticket mutations', () => {
     expect(outcome.ok).toBe(true);
 
     const rewritten = await readFile(childPath, 'utf8');
-    expect(rewritten).toContain('Parent: &old-parent 001-new-name');
+    expect(rewritten).toContain('Parent: 001-new-name');
     expect(rewritten).toContain('Echo: &old-parent-preserved 001-old-name');
     expect(rewritten).toContain('!!omap');
     expect(rewritten).toContain('!!pairs');
