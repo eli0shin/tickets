@@ -1,6 +1,6 @@
-import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
+import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
+import { lock as acquireFileLock } from 'proper-lockfile';
 import type { DocumentDiagnostic, Outcome } from './documents.ts';
 import { readTrackerDocument, writeNewTrackerDocument } from './documents.ts';
 import type { Project, Status, Ticket } from './discovery.ts';
@@ -117,12 +117,17 @@ export async function createTicket(
   if (!projectValidation.ok) return projectValidation;
   const selectedStatus = input.status ?? projectValidation.value;
 
-  const lockPath = join(project.path, '.ticket-creation-lock');
-  const lock = await acquireCreationLock(lockPath);
+  const lock = await acquireCreationLock(project.path);
   if (!lock.ok) return lock;
 
   return createTicketWithLockHeld(project, selectedStatus, input, lock.value);
 }
+
+type CreationLock = {
+  readonly path: string;
+  readonly release: () => Promise<void>;
+  readonly compromisedError: () => Error | undefined;
+};
 
 async function createTicketWithLockHeld(
   project: Project,
@@ -130,20 +135,12 @@ async function createTicketWithLockHeld(
   input: CreateTicketInput,
   lock: CreationLock
 ): Promise<Outcome<Ticket>> {
-  const heartbeat = setInterval(() => {
-    const now = new Date();
-    void utimes(lock.ownerPath, now, now).catch(() => undefined);
-  }, 1_000);
-  heartbeat.unref();
-
   return createTicketWhileLocked(project, selectedStatus, input).then(
     async (result) => {
-      clearInterval(heartbeat);
       const release = await releaseCreationLock(lock);
       return release.ok ? result : release;
     },
     async (error: unknown) => {
-      clearInterval(heartbeat);
       const release = await releaseCreationLock(lock);
       if (!release.ok) return release;
       throw error;
@@ -154,19 +151,14 @@ async function createTicketWithLockHeld(
 async function releaseCreationLock(
   lock: CreationLock
 ): Promise<Outcome<undefined>> {
+  const compromised = lock.compromisedError();
   try {
-    const currentOwner = await readCreationLockOwner(lock.ownerPath);
-    if (currentOwner?.token !== lock.token) {
-      return failure(
-        lock.path,
-        'resource-exists',
-        'Ticket creation lock ownership changed unexpectedly'
-      );
-    }
-    await rm(lock.path, { recursive: true });
-    return { ok: true, value: undefined };
+    await lock.release();
+    return compromised === undefined
+      ? { ok: true, value: undefined }
+      : filesystemFailure(lock.path, compromised);
   } catch (error) {
-    return filesystemFailure(lock.path, error);
+    return filesystemFailure(lock.path, compromised ?? error);
   }
 }
 
@@ -196,166 +188,39 @@ async function validateProject(
   return { ok: true, value: defaultStatus };
 }
 
-const CREATION_LOCK_STALE_AFTER_MS = 30_000;
-const CREATION_LOCK_OWNER = 'owner.json';
-
-type CreationLock = {
-  readonly path: string;
-  readonly ownerPath: string;
-  readonly token: string;
-  readonly pid: number;
-};
-
 async function acquireCreationLock(
-  lockPath: string
+  projectPath: string
 ): Promise<Outcome<CreationLock>> {
-  const lock = {
-    path: lockPath,
-    ownerPath: join(lockPath, CREATION_LOCK_OWNER),
-    token: randomUUID(),
-    pid: process.pid,
-  } satisfies CreationLock;
-
-  for (let attempt = 0; attempt < 50; attempt += 1) {
-    try {
-      await mkdir(lock.path);
-      await writeFile(
-        lock.ownerPath,
-        `${JSON.stringify({ token: lock.token, pid: lock.pid })}\n`,
-        { encoding: 'utf8', flag: 'wx' }
-      );
-      return { ok: true, value: lock };
-    } catch (error) {
-      if (!hasErrorCode(error, 'EEXIST')) {
-        await removeIncompleteCreationLock(lock);
-        return filesystemFailure(lock.path, error);
-      }
-      const recovery = await recoverStaleCreationLock(lock);
-      if (!recovery.ok) return recovery;
-      if (recovery.value) return { ok: true, value: lock };
-      await Bun.sleep(10);
-    }
-  }
-  return failure(
-    lock.path,
-    'resource-exists',
-    'Another ticket creation is already in progress'
-  );
-}
-
-async function removeIncompleteCreationLock(lock: CreationLock): Promise<void> {
+  const lockPath = join(projectPath, '.ticket-creation-lock');
+  let compromised: Error | undefined;
   try {
-    const owner = await readCreationLockOwner(lock.ownerPath);
-    if (owner === null || owner.token === lock.token) {
-      await rm(lock.path, { recursive: true });
-    }
-  } catch {
-    // Preserve the original acquisition failure.
-  }
-}
-
-async function recoverStaleCreationLock(
-  lock: CreationLock
-): Promise<Outcome<boolean>> {
-  const claimPath = `${lock.path}-recovery`;
-  const claim = await acquireRecoveryClaim(claimPath);
-  if (!claim.ok || !claim.value) return claim;
-
-  const recovery = await recoverStaleCreationLockWithClaim(lock);
-  try {
-    await rm(claimPath, { recursive: true });
-    return recovery;
-  } catch (error) {
-    return filesystemFailure(claimPath, error);
-  }
-}
-
-async function acquireRecoveryClaim(
-  claimPath: string
-): Promise<Outcome<boolean>> {
-  try {
-    await mkdir(claimPath);
-    return { ok: true, value: true };
-  } catch (error) {
-    return hasErrorCode(error, 'EEXIST')
-      ? { ok: true, value: false }
-      : filesystemFailure(claimPath, error);
-  }
-}
-
-async function recoverStaleCreationLockWithClaim(
-  lock: CreationLock
-): Promise<Outcome<boolean>> {
-  const stale = await creationLockIsStale(lock.path);
-  if (!stale.ok || !stale.value) return stale;
-
-  try {
-    await rm(lock.path, { recursive: true });
-    await mkdir(lock.path);
-    await writeFile(
-      lock.ownerPath,
-      `${JSON.stringify({ token: lock.token, pid: lock.pid })}\n`,
-      { encoding: 'utf8', flag: 'wx' }
-    );
-    return { ok: true, value: true };
-  } catch (error) {
-    if (hasErrorCode(error, 'EEXIST')) return { ok: true, value: false };
-    return filesystemFailure(lock.path, error);
-  }
-}
-
-async function creationLockIsStale(
-  lockPath: string
-): Promise<Outcome<boolean>> {
-  try {
-    const ownerPath = join(lockPath, CREATION_LOCK_OWNER);
-    const owner = await readCreationLockOwner(ownerPath);
-    const ownership = await stat(owner === null ? lockPath : ownerPath);
-    const recentlyActive =
-      Date.now() - ownership.mtimeMs <= CREATION_LOCK_STALE_AFTER_MS;
+    const release = await acquireFileLock(projectPath, {
+      lockfilePath: lockPath,
+      realpath: false,
+      stale: 30_000,
+      update: 1_000,
+      retries: { retries: 50, factor: 1, minTimeout: 10, maxTimeout: 10 },
+      onCompromised: (error) => {
+        compromised = error;
+      },
+    });
     return {
       ok: true,
-      value:
-        !recentlyActive || (owner !== null && !processIsRunning(owner.pid)),
+      value: {
+        path: lockPath,
+        release,
+        compromisedError: () => compromised,
+      },
     };
   } catch (error) {
-    if (hasErrorCode(error, 'ENOENT')) return { ok: true, value: false };
+    if (hasErrorCode(error, 'ELOCKED')) {
+      return failure(
+        lockPath,
+        'resource-exists',
+        'Another ticket creation is already in progress'
+      );
+    }
     return filesystemFailure(lockPath, error);
-  }
-}
-
-async function readCreationLockOwner(
-  ownerPath: string
-): Promise<{ readonly token: string; readonly pid: number } | null> {
-  try {
-    const value: unknown = JSON.parse(await readFile(ownerPath, 'utf8'));
-    if (
-      value !== null &&
-      typeof value === 'object' &&
-      'token' in value &&
-      typeof value.token === 'string' &&
-      'pid' in value &&
-      typeof value.pid === 'number' &&
-      Number.isSafeInteger(value.pid) &&
-      value.pid > 0
-    ) {
-      return { token: value.token, pid: value.pid };
-    }
-    return null;
-  } catch (error) {
-    if (hasErrorCode(error, 'ENOENT') || error instanceof SyntaxError) {
-      return null;
-    }
-    throw error;
-  }
-}
-
-function processIsRunning(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return !hasErrorCode(error, 'ESRCH');
   }
 }
 

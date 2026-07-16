@@ -892,12 +892,8 @@ describe('tracker resource creation', () => {
     const projectPath = join(workspaceRoot, 'alpha-project');
     const lockPath = join(projectPath, '.ticket-creation-lock');
     await mkdir(lockPath);
-    const exitedProcess = Bun.spawn(['true']);
-    await exitedProcess.exited;
-    await writeFile(
-      join(lockPath, 'owner.json'),
-      `${JSON.stringify({ token: 'interrupted', pid: exitedProcess.pid })}\n`
-    );
+    const staleTime = new Date(Date.now() - 60_000);
+    await utimes(lockPath, staleTime, staleTime);
 
     const outcome = await tracker.createTicket('alpha-project', {
       description: 'after-interruption',
@@ -921,12 +917,8 @@ describe('tracker resource creation', () => {
       '.ticket-creation-lock'
     );
     await mkdir(lockPath);
-    const exitedProcess = Bun.spawn(['true']);
-    await exitedProcess.exited;
-    await writeFile(
-      join(lockPath, 'owner.json'),
-      `${JSON.stringify({ token: 'interrupted', pid: exitedProcess.pid })}\n`
-    );
+    const staleTime = new Date(Date.now() - 60_000);
+    await utimes(lockPath, staleTime, staleTime);
 
     const outcomes = await Promise.all([
       tracker.createTicket('alpha-project', {
@@ -942,56 +934,6 @@ describe('tracker resource creation', () => {
         .flatMap((outcome) => (outcome.ok ? [outcome.value.id] : []))
         .toSorted()
     ).toEqual([1n, 2n]);
-  });
-
-  test('does not expire a live creation lock based on age alone', async () => {
-    const workspaceRoot = await temporaryWorkspace();
-    const tracker = createTracker(workspaceRoot);
-    await tracker.createProject('alpha-project');
-    const lockPath = join(
-      workspaceRoot,
-      'alpha-project',
-      '.ticket-creation-lock'
-    );
-    await mkdir(lockPath);
-    await writeFile(
-      join(lockPath, 'owner.json'),
-      `${JSON.stringify({ token: 'live-owner', pid: process.pid })}\n`
-    );
-    const staleTime = new Date(Date.now() - 60_000);
-    await utimes(lockPath, staleTime, staleTime);
-
-    const outcome = await tracker.createTicket('alpha-project', {
-      description: 'must-not-overlap',
-    });
-    expect(outcome.ok).toBe(false);
-    if (outcome.ok) throw new Error('Expected active lock contention');
-    expect(outcome.diagnostic.code).toBe('resource-exists');
-    expect(await readdir(lockPath)).toEqual(['owner.json']);
-  });
-
-  test('recovers a stale owner record when its PID has been reused', async () => {
-    const workspaceRoot = await temporaryWorkspace();
-    const tracker = createTracker(workspaceRoot);
-    await tracker.createProject('alpha-project');
-    const lockPath = join(
-      workspaceRoot,
-      'alpha-project',
-      '.ticket-creation-lock'
-    );
-    const ownerPath = join(lockPath, 'owner.json');
-    await mkdir(lockPath);
-    await writeFile(
-      ownerPath,
-      `${JSON.stringify({ token: 'old-process', pid: process.pid })}\n`
-    );
-    const staleTime = new Date(Date.now() - 60_000);
-    await utimes(ownerPath, staleTime, staleTime);
-
-    const outcome = await tracker.createTicket('alpha-project', {
-      description: 'after-pid-reuse',
-    });
-    expect(outcome.ok).toBe(true);
   });
 
   test('requires a valid declared default status even with an override', async () => {
