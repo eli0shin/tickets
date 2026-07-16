@@ -1,5 +1,11 @@
 import { readFile, writeFile } from 'node:fs/promises';
-import { parseDocument, stringify, type YAMLParseError } from 'yaml';
+import {
+  Document,
+  isScalar,
+  parseDocument,
+  visit,
+  type YAMLParseError,
+} from 'yaml';
 
 export type Metadata = Readonly<Record<string, unknown>>;
 
@@ -14,6 +20,7 @@ export type DocumentDiagnosticCode =
   | 'duplicate-project-key'
   | 'duplicate-ticket-key'
   | 'filesystem-error'
+  | 'invalid-name'
   | 'malformed-project-yaml'
   | 'malformed-ticket-yaml'
   | 'serialization-error';
@@ -41,7 +48,7 @@ function duplicateCode(kind: DocumentKind): DocumentDiagnosticCode {
   return kind === 'project' ? 'duplicate-project-key' : 'duplicate-ticket-key';
 }
 
-function parserMessage(error: YAMLParseError): string {
+function parserMessage(error: Pick<YAMLParseError, 'message'>): string {
   return error.message.replace(/\r?\n[\s\S]*$/, '');
 }
 
@@ -66,6 +73,7 @@ export function parseTrackerDocument(
 
   const yamlSource = remainder.slice(0, closing.index);
   const document = parseDocument(yamlSource, {
+    intAsBigInt: true,
     prettyErrors: false,
     uniqueKeys: true,
   });
@@ -77,6 +85,36 @@ export function parseTrackerDocument(
         path,
         code: duplicate ? duplicateCode(kind) : malformedCode(kind),
         message: parserMessage(error),
+      },
+    };
+  }
+  for (const warning of document.warnings) {
+    return {
+      ok: false,
+      diagnostic: {
+        path,
+        code: malformedCode(kind),
+        message: parserMessage(warning),
+      },
+    };
+  }
+  if (!hasOnlyStringKeys(document)) {
+    return {
+      ok: false,
+      diagnostic: {
+        path,
+        code: malformedCode(kind),
+        message: 'YAML mapping keys must be strings',
+      },
+    };
+  }
+  if (!hasOnlySupportedTags(document)) {
+    return {
+      ok: false,
+      diagnostic: {
+        path,
+        code: malformedCode(kind),
+        message: 'YAML front matter contains an unsupported tag',
       },
     };
   }
@@ -97,6 +135,16 @@ export function parseTrackerDocument(
         path,
         code: malformedCode(kind),
         message: 'YAML front matter must contain a mapping',
+      },
+    };
+  }
+  if (!isSupportedValue(metadata, new WeakSet())) {
+    return {
+      ok: false,
+      diagnostic: {
+        path,
+        code: malformedCode(kind),
+        message: 'YAML front matter contains an unsupported value',
       },
     };
   }
@@ -138,7 +186,97 @@ export async function writeTrackerDocument(
 }
 
 function isMetadata(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
+  return (
+    value !== null &&
+    typeof value === 'object' &&
+    Object.getPrototypeOf(value) === Object.prototype
+  );
+}
+
+function hasOnlyStringKeys(
+  document: ReturnType<typeof parseDocument>
+): boolean {
+  let valid = true;
+  visit(document, {
+    Pair: (_key, pair) => {
+      if (!isScalar(pair.key) || typeof pair.key.value !== 'string') {
+        valid = false;
+        return visit.BREAK;
+      }
+    },
+  });
+  return valid;
+}
+
+const SUPPORTED_TAGS = new Set([
+  'tag:yaml.org,2002:bool',
+  'tag:yaml.org,2002:float',
+  'tag:yaml.org,2002:int',
+  'tag:yaml.org,2002:map',
+  'tag:yaml.org,2002:null',
+  'tag:yaml.org,2002:seq',
+  'tag:yaml.org,2002:str',
+]);
+
+function hasOnlySupportedTags(
+  document: ReturnType<typeof parseDocument>
+): boolean {
+  let valid = true;
+  visit(document, {
+    Node: (_key, node) => {
+      if (
+        'tag' in node &&
+        node.tag !== undefined &&
+        !SUPPORTED_TAGS.has(node.tag)
+      ) {
+        valid = false;
+        return visit.BREAK;
+      }
+    },
+  });
+  return valid;
+}
+
+function isSupportedValue(value: unknown, ancestors: WeakSet<object>): boolean {
+  if (
+    value === null ||
+    typeof value === 'string' ||
+    typeof value === 'boolean' ||
+    typeof value === 'bigint' ||
+    typeof value === 'number'
+  ) {
+    return true;
+  }
+  if (typeof value !== 'object') return false;
+  if (ancestors.has(value)) return false;
+
+  const array = Array.isArray(value);
+  if (!array && Object.getPrototypeOf(value) !== Object.prototype) return false;
+
+  const keys = Reflect.ownKeys(value);
+  if (
+    array &&
+    (keys.length !== value.length + 1 ||
+      keys.some((key, index) =>
+        index < value.length ? key !== String(index) : key !== 'length'
+      ))
+  ) {
+    return false;
+  }
+
+  ancestors.add(value);
+  const valid = keys.every((key) => {
+    if (key === 'length' && array) return true;
+    if (typeof key !== 'string') return false;
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    return (
+      descriptor?.enumerable === true &&
+      'value' in descriptor &&
+      isSupportedValue(descriptor.value, ancestors)
+    );
+  });
+  ancestors.delete(value);
+  return valid;
 }
 
 function convertToMetadata(
@@ -158,22 +296,40 @@ function serializeDocument(
   document: TrackerDocument
 ): Outcome<string> {
   try {
-    const yaml = stringify(document.metadata, {
-      lineWidth: 0,
-      nullStr: '',
+    if (
+      Object.getPrototypeOf(document.metadata) !== Object.prototype ||
+      !isSupportedValue(document.metadata, new WeakSet())
+    ) {
+      return serializationFailure(
+        path,
+        'YAML front matter contains an unsupported value'
+      );
+    }
+
+    const yamlDocument = new Document(document.metadata);
+    visit(yamlDocument, {
+      Scalar: (_key, scalar) => {
+        if (
+          typeof scalar.value === 'number' &&
+          Number.isInteger(scalar.value)
+        ) {
+          scalar.minFractionDigits = 1;
+        }
+      },
     });
+    const yaml = yamlDocument.toString({ lineWidth: 0, nullStr: '' });
     const body = document.body.replaceAll('\r\n', '\n').replaceAll('\r', '\n');
     return { ok: true, value: `---\n${yaml}---\n${body}` };
   } catch (error) {
-    return {
-      ok: false,
-      diagnostic: {
-        path,
-        code: 'serialization-error',
-        message: errorMessage(error),
-      },
-    };
+    return serializationFailure(path, errorMessage(error));
   }
+}
+
+function serializationFailure<T>(path: string, message: string): Outcome<T> {
+  return {
+    ok: false,
+    diagnostic: { path, code: 'serialization-error', message },
+  };
 }
 
 function malformedFailure<T>(

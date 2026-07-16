@@ -1,6 +1,6 @@
-import { afterEach, describe, expect, test } from 'bun:test';
+import { afterEach, describe, expect, spyOn, test } from 'bun:test';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
   createTracker,
@@ -54,11 +54,11 @@ async function discoverTicket(
     workspaceRoot,
     projectName
   );
-  const statuses = await tracker.discoverStatuses(project);
+  const statuses = await tracker.discoverStatuses(project.name);
   const status = statuses.entries.find((entry) => entry.name === statusName);
   if (status === undefined)
     throw new Error(`Status ${statusName} was not found`);
-  const tickets = await tracker.discoverTickets(status);
+  const tickets = await tracker.discoverTickets(project.name, status.name);
   const ticket = tickets.entries[0];
   return { tracker, project, ticket };
 }
@@ -137,7 +137,7 @@ describe('tracker filesystem discovery', () => {
     await writeFile(join(projectPath, 'unexpected.txt'), 'unexpected');
 
     const { tracker, project } = await discoverProject(workspaceRoot);
-    expect(await tracker.discoverStatuses(project)).toEqual({
+    expect(await tracker.discoverStatuses(project.name)).toEqual({
       entries: [
         {
           name: 'in-progress',
@@ -170,10 +170,10 @@ describe('tracker filesystem discovery', () => {
     ]);
 
     const { tracker, project } = await discoverProject(workspaceRoot);
-    const statuses = await tracker.discoverStatuses(project);
+    const statuses = await tracker.discoverStatuses(project.name);
     const status = statuses.entries[0];
 
-    expect(await tracker.discoverTickets(status)).toEqual({
+    expect(await tracker.discoverTickets(project.name, status.name)).toEqual({
       entries: [
         {
           id: 2,
@@ -198,6 +198,36 @@ describe('tracker filesystem discovery', () => {
         },
       ],
       diagnostics: [],
+    });
+  });
+
+  test('derives resource paths from validated names within its workspace', async () => {
+    const workspaceRoot = await temporaryWorkspace();
+    const outsideRoot = await temporaryWorkspace();
+    await writeFile(
+      join(outsideRoot, 'project.md'),
+      '---\nDefault-Status: todo\n---\nOutside\n'
+    );
+    const tracker = createTracker(workspaceRoot);
+    const traversal = `../${basename(outsideRoot)}`;
+
+    expect(await tracker.readProject(traversal)).toEqual({
+      ok: false,
+      diagnostic: {
+        path: workspaceRoot,
+        code: 'invalid-name',
+        message: `Invalid project name: ${traversal}`,
+      },
+    });
+    expect(await tracker.discoverStatuses('../outside')).toEqual({
+      entries: [],
+      diagnostics: [
+        {
+          path: workspaceRoot,
+          code: 'invalid-name',
+          message: 'Invalid project name: ../outside',
+        },
+      ],
     });
   });
 
@@ -234,7 +264,7 @@ describe('tracker document parsing and canonical writing', () => {
     );
 
     const { tracker, project } = await discoverProject(workspaceRoot);
-    expect(await tracker.readProject(project)).toEqual({
+    expect(await tracker.readProject(project.name)).toEqual({
       ok: true,
       value: {
         metadata: {
@@ -271,7 +301,7 @@ describe('tracker document parsing and canonical writing', () => {
       throw new Error('Projects were not found');
     }
 
-    expect(await tracker.readProject(malformed)).toEqual({
+    expect(await tracker.readProject(malformed.name)).toEqual({
       ok: false,
       diagnostic: {
         path: malformedPath,
@@ -279,7 +309,7 @@ describe('tracker document parsing and canonical writing', () => {
         message: 'YAML front matter is missing or not delimited correctly',
       },
     });
-    const duplicateOutcome = await tracker.readProject(duplicate);
+    const duplicateOutcome = await tracker.readProject(duplicate.name);
     expect(duplicateOutcome.ok).toBe(false);
     if (duplicateOutcome.ok) throw new Error('Expected duplicate key failure');
     expect(duplicateOutcome.diagnostic.path).toBe(duplicatePath);
@@ -296,10 +326,128 @@ describe('tracker document parsing and canonical writing', () => {
     await writeFile(join(statusPath, '001-empty.md'), '---\n---\nBody\n');
 
     const { tracker, ticket } = await discoverTicket(workspaceRoot);
-    expect(await tracker.readTicket(ticket)).toEqual({
+    expect(
+      await tracker.readTicket(
+        ticket.status.project.name,
+        ticket.status.name,
+        ticket.name
+      )
+    ).toEqual({
       ok: true,
       value: { metadata: {}, body: 'Body\n' },
     });
+  });
+
+  test('round-trips semantically valid unknown metadata fields', async () => {
+    const workspaceRoot = await temporaryWorkspace();
+    const statusPath = join(workspaceRoot, 'alpha-project', 'todo');
+    const ticketPath = join(statusPath, '001-unknown-fields.md');
+    await mkdir(statusPath, { recursive: true });
+    await writeFile(
+      ticketPath,
+      [
+        '---',
+        'Unknown:',
+        '  nested:',
+        '    enabled: true',
+        '    explicit-float: !!float 1.0',
+        '    integer-float: 1.0',
+        '    large: 9007199254740993',
+        '    negative-zero: -0.0',
+        '    values: [one, 2, null]',
+        '---',
+        'Body',
+        '',
+      ].join('\n')
+    );
+
+    const { tracker, ticket } = await discoverTicket(workspaceRoot);
+    const firstRead = await tracker.readTicket(
+      ticket.status.project.name,
+      ticket.status.name,
+      ticket.name
+    );
+    if (!firstRead.ok) throw new Error(firstRead.diagnostic.message);
+    expect(firstRead.value.metadata).toEqual({
+      Unknown: {
+        nested: {
+          enabled: true,
+          'explicit-float': 1,
+          'integer-float': 1,
+          large: 9007199254740993n,
+          'negative-zero': -0,
+          values: ['one', 2n, null],
+        },
+      },
+    });
+    expect(
+      await tracker.writeTicket(
+        ticket.status.project.name,
+        ticket.status.name,
+        ticket.name,
+        firstRead.value
+      )
+    ).toEqual({ ok: true, value: undefined });
+    expect(
+      await tracker.readTicket(
+        ticket.status.project.name,
+        ticket.status.name,
+        ticket.name
+      )
+    ).toEqual(firstRead);
+    const canonical = await readFile(ticketPath, 'utf8');
+    expect(canonical.includes('explicit-float: 1.0')).toBe(true);
+    expect(canonical.includes('integer-float: 1.0')).toBe(true);
+    expect(canonical.includes('negative-zero: -0.0')).toBe(true);
+  });
+
+  test('rejects lossy YAML shapes without emitting parser output', async () => {
+    const workspaceRoot = await temporaryWorkspace();
+    const statusPath = join(workspaceRoot, 'alpha-project', 'todo');
+    await mkdir(statusPath, { recursive: true });
+    const sources = new Map([
+      ['001-colliding-keys.md', '---\n1: numeric\n"1": string\n---\nBody\n'],
+      ['002-collection-key.md', '---\n? [one, two]\n: collection\n---\nBody\n'],
+      ['003-unsupported-tag.md', '---\nUnknown: !foo value\n---\nBody\n'],
+      ['004-ordered-map.md', '---\nUnknown: !!omap [one: 1]\n---\nBody\n'],
+      ['005-set.md', '---\nUnknown: !!set {one: null}\n---\nBody\n'],
+      ['006-binary.md', '---\nUnknown: !!binary SGk=\n---\nBody\n'],
+    ]);
+    await Promise.all(
+      [...sources].map(([name, source]) =>
+        writeFile(join(statusPath, name), source)
+      )
+    );
+
+    const warn = spyOn(console, 'warn').mockImplementation(() => undefined);
+    const error = spyOn(console, 'error').mockImplementation(() => undefined);
+    const { tracker, project } = await discoverProject(workspaceRoot);
+    const tickets = await tracker.discoverTickets(project.name, 'todo');
+    const outcomes = await Promise.all(
+      tickets.entries.map((ticket) =>
+        tracker.readTicket(project.name, 'todo', ticket.name)
+      )
+    );
+
+    expect(
+      outcomes.map((outcome) =>
+        outcome.ok ? 'success' : outcome.diagnostic.code
+      )
+    ).toEqual([
+      'malformed-ticket-yaml',
+      'malformed-ticket-yaml',
+      'malformed-ticket-yaml',
+      'malformed-ticket-yaml',
+      'malformed-ticket-yaml',
+      'malformed-ticket-yaml',
+    ]);
+    expect(warn).not.toHaveBeenCalled();
+    expect(error).not.toHaveBeenCalled();
+    for (const [name, source] of sources) {
+      expect(await readFile(join(statusPath, name), 'utf8')).toBe(source);
+    }
+    warn.mockRestore();
+    error.mockRestore();
   });
 
   test('classifies unresolved YAML aliases as malformed metadata', async () => {
@@ -310,7 +458,11 @@ describe('tracker document parsing and canonical writing', () => {
     await writeFile(ticketPath, '---\nUnknown: *missing\n---\n');
 
     const { tracker, ticket } = await discoverTicket(workspaceRoot);
-    const outcome = await tracker.readTicket(ticket);
+    const outcome = await tracker.readTicket(
+      ticket.status.project.name,
+      ticket.status.name,
+      ticket.name
+    );
     expect(outcome.ok).toBe(false);
     if (outcome.ok) throw new Error('Expected malformed alias failure');
     expect(outcome.diagnostic.path).toBe(ticketPath);
@@ -336,16 +488,20 @@ describe('tracker document parsing and canonical writing', () => {
     );
 
     const { tracker, project } = await discoverProject(workspaceRoot);
-    const statuses = await tracker.discoverStatuses(project);
+    const statuses = await tracker.discoverStatuses(project.name);
     const status = statuses.entries[0];
-    const tickets = await tracker.discoverTickets(status);
+    const tickets = await tracker.discoverTickets(project.name, status.name);
 
     expect(tickets.entries.map((ticket) => ticket.name)).toEqual([
       '001-valid',
       '002-malformed',
       '003-duplicate',
     ]);
-    const outcomes = await Promise.all(tickets.entries.map(tracker.readTicket));
+    const outcomes = await Promise.all(
+      tickets.entries.map((entry) =>
+        tracker.readTicket(project.name, status.name, entry.name)
+      )
+    );
     expect(outcomes[0]).toEqual({
       ok: true,
       value: {
@@ -379,15 +535,24 @@ describe('tracker document parsing and canonical writing', () => {
     );
 
     const { tracker, ticket } = await discoverTicket(workspaceRoot);
-    const readOutcome = await tracker.readTicket(ticket);
+    const readOutcome = await tracker.readTicket(
+      ticket.status.project.name,
+      ticket.status.name,
+      ticket.name
+    );
     if (!readOutcome.ok) throw new Error(readOutcome.diagnostic.message);
-    const writeOutcome = await tracker.writeTicket(ticket, {
-      metadata: {
-        ...readOutcome.value.metadata,
-        Tags: ['one-tag'],
-      },
-      body: readOutcome.value.body,
-    });
+    const writeOutcome = await tracker.writeTicket(
+      ticket.status.project.name,
+      ticket.status.name,
+      ticket.name,
+      {
+        metadata: {
+          ...readOutcome.value.metadata,
+          Tags: ['one-tag'],
+        },
+        body: readOutcome.value.body,
+      }
+    );
 
     expect(writeOutcome).toEqual({ ok: true, value: undefined });
     const bytes = await readFile(ticketPath);
@@ -419,18 +584,38 @@ describe('tracker document parsing and canonical writing', () => {
     await writeFile(ticketPath, original);
 
     const { tracker, ticket } = await discoverTicket(workspaceRoot);
-    const outcome = await tracker.writeTicket(ticket, {
-      metadata: { Unknown: Symbol('unsupported') },
-      body: 'Changed\n',
-    });
-
-    expect(outcome.ok).toBe(false);
-    if (outcome.ok) throw new Error('Expected serialization failure');
-    expect(outcome.diagnostic.path).toBe(ticketPath);
-    expect(outcome.diagnostic.code).toBe('serialization-error');
-    expect(outcome.diagnostic.message).toBe(
-      'Tag not resolved for Symbol value'
+    const unsupported = [
+      Symbol('unsupported'),
+      new Date('2026-01-01T00:00:00Z'),
+      new Map([['key', 'value']]),
+      new Set(['value']),
+      new Uint8Array([1, 2]),
+    ];
+    const outcomes = await Promise.all(
+      unsupported.map((value) =>
+        tracker.writeTicket(
+          ticket.status.project.name,
+          ticket.status.name,
+          ticket.name,
+          {
+            metadata: { Unknown: value },
+            body: 'Changed\n',
+          }
+        )
+      )
     );
+
+    expect(
+      outcomes.map((outcome) =>
+        outcome.ok ? 'success' : outcome.diagnostic.code
+      )
+    ).toEqual([
+      'serialization-error',
+      'serialization-error',
+      'serialization-error',
+      'serialization-error',
+      'serialization-error',
+    ]);
     expect(await readFile(ticketPath, 'utf8')).toBe(original);
   });
 
@@ -440,14 +625,14 @@ describe('tracker document parsing and canonical writing', () => {
     await mkdir(projectPath);
     const { tracker, project } = await discoverProject(workspaceRoot);
 
-    const readOutcome = await tracker.readProject(project);
+    const readOutcome = await tracker.readProject(project.name);
     expect(readOutcome.ok).toBe(false);
     if (readOutcome.ok) throw new Error('Expected read failure');
     expect(readOutcome.diagnostic.code).toBe('filesystem-error');
     expect(readOutcome.diagnostic.path).toBe(join(projectPath, 'project.md'));
 
     await rm(projectPath, { recursive: true });
-    const writeOutcome = await tracker.writeProject(project, {
+    const writeOutcome = await tracker.writeProject(project.name, {
       metadata: { 'Default-Status': 'todo' },
       body: '',
     });
