@@ -1,4 +1,4 @@
-import { mkdir, readdir, rmdir, writeFile } from 'node:fs/promises';
+import { mkdir, rmdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { lock as acquireFileLock } from 'proper-lockfile';
 import type { DocumentDiagnostic, Outcome } from './documents.ts';
@@ -269,17 +269,9 @@ async function createTicketWhileLocked(
   selectedStatus: string,
   input: CreateTicketInput
 ): Promise<Outcome<Ticket>> {
-  let allocation;
-  let id: bigint;
-  for (;;) {
-    allocation = await discoverTicketAllocation(project, selectedStatus);
-    if (!allocation.ok) return allocation;
-    id = allocation.value.highestId + 1n;
-    const claim = await claimTicketId(project.path, id);
-    if (!claim.ok) return claim;
-    if (claim.value) break;
-  }
-
+  const allocation = await discoverTicketAllocation(project, selectedStatus);
+  if (!allocation.ok) return allocation;
+  const id = allocation.value.highestId + 1n;
   const name = `${id.toString().padStart(3, '0')}-${input.description}`;
   const ticket = {
     id,
@@ -298,21 +290,6 @@ async function createTicketWhileLocked(
     body: '',
   });
   return write.ok ? { ok: true, value: ticket } : write;
-}
-
-async function claimTicketId(
-  projectPath: string,
-  id: bigint
-): Promise<Outcome<boolean>> {
-  const claimPath = join(projectPath, `.ticket-id-${id}-claim`);
-  try {
-    await writeFile(claimPath, '', { flag: 'wx' });
-    return { ok: true, value: true };
-  } catch (error) {
-    return hasErrorCode(error, 'EEXIST')
-      ? { ok: true, value: false }
-      : filesystemFailure(claimPath, error);
-  }
 }
 
 async function discoverTicketAllocation(
@@ -334,15 +311,6 @@ async function discoverTicketAllocation(
   }
 
   let highestId = 0n;
-  const projectEntries = await readProjectEntries(project.path);
-  if (!projectEntries.ok) return projectEntries;
-  for (const name of projectEntries.value) {
-    const match = /^\.ticket-id-(\d+)-claim$/u.exec(name);
-    if (match !== null) {
-      const claimedId = BigInt(match[1]);
-      if (claimedId > highestId) highestId = claimedId;
-    }
-  }
   for (const status of statuses.entries) {
     const tickets = await discoverTickets(status);
     const diagnostic = tickets.diagnostics.at(0);
@@ -352,14 +320,6 @@ async function discoverTicketAllocation(
     }
   }
   return { ok: true, value: { highestId, status: selected } };
-}
-
-async function readProjectEntries(path: string): Promise<Outcome<string[]>> {
-  try {
-    return { ok: true, value: await readdir(path) };
-  } catch (error) {
-    return filesystemFailure(path, error);
-  }
 }
 
 function validateTicketInput(
