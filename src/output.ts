@@ -52,6 +52,20 @@ export async function confirmOverwrite(
   }
 }
 
+export function writeUnexpectedFailure(error: unknown): void {
+  const message = unexpectedFailureMessage(error).replace(/\s+/g, ' ').trim();
+  writeDiagnostic(`Unexpected failure: ${message || 'unknown error'}`);
+  process.exitCode = 2;
+}
+
+function unexpectedFailureMessage(error: unknown): string {
+  try {
+    return error instanceof Error ? error.message : String(error);
+  } catch {
+    return 'unknown error';
+  }
+}
+
 export function writeCommandFailure(failure: CommandFailure): void {
   switch (failure.kind) {
     case 'message':

@@ -508,6 +508,55 @@ test('lint covers every finding code and a clean JSON run through the CLI', asyn
   });
 }, 20_000);
 
+test('the CLI boundary renders an injected unexpected command failure', async () => {
+  expect(
+    await run(['bun', 'tests/fixtures/unexpected-cli.ts', 'status', 'list'], {
+      env: { TICKETS_TEST_UNEXPECTED: 'command' },
+    })
+  ).toEqual({
+    stdout: '',
+    stderr: 'Unexpected failure: command failed unexpectedly with context\n',
+    exitCode: 2,
+  });
+});
+
+test('an arbitrary CommanderError from a command reaches the CLI boundary', async () => {
+  expect(
+    await run(['bun', 'tests/fixtures/unexpected-cli.ts', 'status', 'list'], {
+      env: { TICKETS_TEST_UNEXPECTED: 'commander' },
+    })
+  ).toEqual({
+    stdout: '',
+    stderr: 'Unexpected failure: command exploded\n',
+    exitCode: 2,
+  });
+});
+
+test('a rejected skill confirmation reaches the CLI boundary', async () => {
+  const target = join(temporaryDirectory, 'rejected-confirmation', 'tickets');
+  await mkdir(target, { recursive: true });
+  await writeFile(join(target, 'SKILL.md'), 'keep me');
+
+  expect(
+    await run(
+      [
+        'bun',
+        'tests/fixtures/unexpected-cli.ts',
+        'skill',
+        'install',
+        '--target',
+        target,
+      ],
+      { env: { TICKETS_TEST_UNEXPECTED: 'confirmation' } }
+    )
+  ).toEqual({
+    stdout: '',
+    stderr: 'Unexpected failure: confirmation unavailable\n',
+    exitCode: 2,
+  });
+  expect(await readFile(join(target, 'SKILL.md'), 'utf8')).toBe('keep me');
+});
+
 test('lint reports selection failures only on stderr with exit status 2', async () => {
   expect(
     await run(
