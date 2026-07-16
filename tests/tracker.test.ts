@@ -5,7 +5,6 @@ import {
   readFile,
   readdir,
   rm,
-  symlink,
   utimes,
   writeFile,
 } from 'node:fs/promises';
@@ -332,58 +331,6 @@ describe('tracker project lint', () => {
         'duplicate-git-repo',
       ].toSorted()
     );
-  });
-
-  test('reads symlinked project metadata and ignores unrelated symlinks', async () => {
-    const workspaceRoot = await temporaryWorkspace();
-    const projectPath = join(workspaceRoot, 'symlinked-project');
-    const metadataPath = join(workspaceRoot, 'project-metadata.md');
-    await mkdir(join(projectPath, 'todo'), { recursive: true });
-    await writeFile(
-      metadataPath,
-      '---\nDefault-Status: todo\nGit-Repo:\n---\n'
-    );
-    await Promise.all([
-      symlink('../project-metadata.md', join(projectPath, 'project.md')),
-      symlink(metadataPath, join(projectPath, 'unrelated-link')),
-    ]);
-
-    const result =
-      await createTracker(workspaceRoot).lintProject('symlinked-project');
-
-    expect(result).toEqual({ ok: true, violations: [] });
-  });
-
-  test('detects a duplicate repository in symlinked peer metadata', async () => {
-    const workspaceRoot = await temporaryWorkspace();
-    const selectedPath = join(workspaceRoot, 'selected-project');
-    const peerPath = join(workspaceRoot, 'peer-project');
-    const peerMetadataPath = join(workspaceRoot, 'peer-metadata.md');
-    const metadata =
-      '---\nDefault-Status: todo\nGit-Repo: https://example.com/owner/repo.git\n---\n';
-    await Promise.all([
-      mkdir(join(selectedPath, 'todo'), { recursive: true }),
-      mkdir(join(peerPath, 'todo'), { recursive: true }),
-    ]);
-    await Promise.all([
-      writeFile(join(selectedPath, 'project.md'), metadata),
-      writeFile(peerMetadataPath, metadata),
-    ]);
-    await symlink('../peer-metadata.md', join(peerPath, 'project.md'));
-
-    const result =
-      await createTracker(workspaceRoot).lintProject('selected-project');
-
-    expect(result).toEqual({
-      ok: true,
-      violations: [
-        {
-          path: join(selectedPath, 'project.md'),
-          code: 'duplicate-git-repo',
-          message: 'Git-Repo is also declared by: peer-project',
-        },
-      ],
-    });
   });
 
   test('returns invocation and filesystem failures outside the finding catalog', async () => {

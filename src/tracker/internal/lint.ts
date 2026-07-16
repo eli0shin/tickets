@@ -63,13 +63,8 @@ export async function lintProject(
   for (const entry of projectEntries.entries) {
     if (entry.name.startsWith('.')) continue;
     const path = join(projectPath, entry.name);
-    if (
-      entry.name === 'project.md' &&
-      (entry.isFile() || entry.isSymbolicLink())
-    ) {
+    if (entry.name === 'project.md' && entry.isFile()) {
       metadataIsFile = true;
-    } else if (entry.isSymbolicLink()) {
-      continue;
     } else if (entry.isDirectory() && isNormalizedName(entry.name)) {
       statuses.push({ name: entry.name, path });
     } else {
@@ -155,7 +150,7 @@ export async function lintProject(
     const statusEntries = await readDirectory(status.path);
     if (!statusEntries.ok) return statusEntries;
     for (const entry of statusEntries.entries) {
-      if (entry.name.startsWith('.') || entry.isSymbolicLink()) continue;
+      if (entry.name.startsWith('.')) continue;
       const path = join(status.path, entry.name);
       const parsed =
         entry.isFile() && entry.name.endsWith('.md')
@@ -337,7 +332,6 @@ async function discoverWorkspaceTickets(workspaceRoot: string): Promise<
   for (const project of projects.entries) {
     if (
       project.name.startsWith('.') ||
-      project.isSymbolicLink() ||
       !project.isDirectory() ||
       !isNormalizedName(project.name)
     )
@@ -348,7 +342,6 @@ async function discoverWorkspaceTickets(workspaceRoot: string): Promise<
     for (const status of entries.entries) {
       if (
         status.name.startsWith('.') ||
-        status.isSymbolicLink() ||
         !status.isDirectory() ||
         !isNormalizedName(status.name)
       )
@@ -409,7 +402,6 @@ async function projectsWithRepository(
     if (
       project.name === selectedProject ||
       project.name.startsWith('.') ||
-      project.isSymbolicLink() ||
       !project.isDirectory() ||
       !isNormalizedName(project.name)
     )
