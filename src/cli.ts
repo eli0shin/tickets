@@ -11,7 +11,19 @@ import {
 } from './commands/create.ts';
 import { lintProject } from './commands/lint.ts';
 import { completeTicket, moveTicket, renameTicket } from './commands/mutate.ts';
-import { addReadOnlyCommands } from './commands/read.ts';
+import {
+  listProjects,
+  listStatuses,
+  listTickets,
+  searchTickets,
+  showTicket,
+  validateProject,
+  validateReference,
+  validateSearchInput,
+  validateStatus,
+  type SearchInput,
+} from './commands/read.ts';
+import { installSkill } from './commands/skill.ts';
 import {
   selectProject,
   type ProjectRepository,
@@ -19,23 +31,37 @@ import {
   type SelectProjectOptions,
 } from './git.ts';
 import {
+  assignUsageExitCode,
   confirmOverwrite,
-  formatProjectSelectionFailure,
-  writeDiagnostic,
-  writeLint,
+  writeCommandFailure,
+  writeCommandOutcome,
+  writeLintOutcome,
   writeMutation,
+  writeProjectList,
+  writeRaw,
+  writeSkillInstallation,
+  writeStatusList,
   writeStderr,
   writeStdout,
-  writeSuccess,
   writeTicketMutation,
+  writeTicketQueryResult,
 } from './output.ts';
 import {
   createTracker,
   isNormalizedName,
   isTicketReference,
   type DocumentDiagnostic,
+  type Tracker,
 } from './tracker/index.ts';
-import { installSkill, type ConfirmOverwrite } from './skill.ts';
+import type { ConfirmOverwrite } from './skill.ts';
+import type { CommandOutcome } from './types.ts';
+
+type GlobalOptions = {
+  readonly workspace?: string;
+  readonly project?: string;
+};
+
+type RootCommand = Command<[], GlobalOptions, Record<string, never>>;
 
 type ProjectRepositoriesOutcome =
   | { readonly ok: true; readonly value: readonly ProjectRepository[] }
@@ -47,11 +73,13 @@ type CliDependencies = {
   cwd?: string;
 };
 
+type SearchOptions = SearchInput & { readonly json?: boolean };
+
 export function createProgram({
   confirmOverwrite: confirm = confirmOverwrite,
   interactive = Boolean(process.stdin.isTTY && process.stderr.isTTY),
   cwd = process.cwd(),
-}: CliDependencies = {}): Command {
+}: CliDependencies = {}): RootCommand {
   const program = new Command()
     .configureOutput({ writeOut: writeStdout, writeErr: writeStderr })
     .exitOverride()
@@ -65,44 +93,137 @@ export function createProgram({
     )
     .option('--project <name>', 'select a project by name');
 
-  addReadOnlyCommands(program, selectProjectForCli, cwd);
-
-  const project = program.commands.find(
-    (command) => command.name() === 'project'
-  );
-  if (project === undefined)
-    throw new Error('Project command group is missing');
-
+  const project = program.command('project').description('manage projects');
+  project
+    .command('list')
+    .description('list projects')
+    .option('--json', 'emit JSON output')
+    .action(async ({ json }) => {
+      const tracker = trackerFor(program.opts().workspace);
+      writeCommandOutcome(await listProjects(tracker), (projects) => {
+        writeProjectList(projects, Boolean(json));
+      });
+    });
   project
     .command('create')
     .description('create a project')
     .argument('<name>', 'normalized project name')
     .option('--default-status <status>', 'default status (replaces todo)')
     .action(async (name, { defaultStatus }) => {
-      const tracker = trackerFor(program.opts().workspace);
-      writeMutation(await createProject(tracker, name, defaultStatus));
+      writeMutation(
+        await createProject(
+          trackerFor(program.opts().workspace),
+          name,
+          defaultStatus
+        )
+      );
     });
 
-  const status = program.commands.find(
-    (command) => command.name() === 'status'
-  );
-  if (status === undefined) throw new Error('Status command group is missing');
-
+  const status = program.command('status').description('manage statuses');
+  status
+    .command('list')
+    .description('list statuses')
+    .option('--json', 'emit JSON output')
+    .action(async ({ json }) => {
+      const selected = await selectedTracker(program, cwd, true);
+      if (!selected.ok) return writeCommandFailure(selected.failure);
+      writeCommandOutcome(
+        await listStatuses(selected.value.tracker, selected.value.project),
+        (statuses) => {
+          writeStatusList(selected.value.project, statuses, Boolean(json));
+        }
+      );
+    });
   status
     .command('create')
     .description('create a status in the selected project')
     .argument('<name>', 'normalized status name')
     .action(async (name) => {
-      const globals = program.opts();
-      const workspace = workspaceFrom(globals.workspace);
-      const projectName = await selectedProject(
-        workspace,
-        cwd,
-        globals.project
-      );
-      if (projectName === null) return;
+      const selected = await selectedTracker(program, cwd);
+      if (!selected.ok) return writeCommandFailure(selected.failure);
       writeMutation(
-        await createStatus(createTracker(workspace), projectName, name)
+        await createStatus(selected.value.tracker, selected.value.project, name)
+      );
+    });
+
+  program
+    .command('show')
+    .description('show a complete ticket document')
+    .argument('<reference>')
+    .action(async (reference) => {
+      const validation = validateReference(reference);
+      if (!validation.ok) return writeCommandFailure(validation.failure);
+      const separator = reference.indexOf('/');
+      const selected =
+        separator === -1
+          ? await selectedTracker(program, cwd, true)
+          : successfulSelection(
+              trackerFor(program.opts().workspace),
+              reference.slice(0, separator)
+            );
+      if (!selected.ok) return writeCommandFailure(selected.failure);
+      writeCommandOutcome(
+        await showTicket(
+          selected.value.tracker,
+          selected.value.project,
+          reference
+        ),
+        writeRaw
+      );
+    });
+
+  program
+    .command('list')
+    .description('list tickets in one status')
+    .argument('<status>')
+    .option('--json', 'emit JSON output')
+    .action(async (statusName, { json }) => {
+      const validation = validateStatus(statusName);
+      if (!validation.ok) return writeCommandFailure(validation.failure);
+      const selected = await selectedTracker(program, cwd, true);
+      if (!selected.ok) return writeCommandFailure(selected.failure);
+      writeCommandOutcome(
+        await listTickets(
+          selected.value.tracker,
+          selected.value.project,
+          statusName
+        ),
+        (result) => {
+          writeTicketQueryResult(result, Boolean(json));
+        }
+      );
+    });
+
+  program
+    .command('search')
+    .description('search tickets using structured criteria')
+    .option('--status <status>', 'match every status', collect, [])
+    .option('--tag <tag>', 'match every tag', collect, [])
+    .option('--assigned-to <assignee>', 'match every assignee', collect, [])
+    .option('--unassigned', 'match unassigned tickets')
+    .option('--parent <reference>', 'match every parent reference', collect, [])
+    .option(
+      '--blocked-by <reference>',
+      'match every blocker reference',
+      collect,
+      []
+    )
+    .option('--unblocked', 'match tickets without blockers')
+    .option('--json', 'emit JSON output')
+    .action(async (options: SearchOptions) => {
+      const validation = validateSearchInput(options);
+      if (!validation.ok) return writeCommandFailure(validation.failure);
+      const selected = await selectedTracker(program, cwd, true);
+      if (!selected.ok) return writeCommandFailure(selected.failure);
+      writeCommandOutcome(
+        await searchTickets(
+          selected.value.tracker,
+          selected.value.project,
+          options
+        ),
+        (result) => {
+          writeTicketQueryResult(result, Boolean(options.json));
+        }
       );
     });
 
@@ -116,16 +237,10 @@ export function createProgram({
     .option('--parent <reference>', 'parent ticket reference')
     .option('--blocked-by <reference...>', 'one or more blocking references')
     .action(async (description, options) => {
-      const globals = program.opts();
-      const workspace = workspaceFrom(globals.workspace);
-      const projectName = await selectedProject(
-        workspace,
-        cwd,
-        globals.project
-      );
-      if (projectName === null) return;
+      const selected = await selectedTracker(program, cwd);
+      if (!selected.ok) return writeCommandFailure(selected.failure);
       writeMutation(
-        await createTicket(createTracker(workspace), projectName, {
+        await createTicket(selected.value.tracker, selected.value.project, {
           description,
           status: options.status,
           assignee: options.assign,
@@ -144,20 +259,17 @@ export function createProgram({
     .action(async (reference, description) => {
       if (!validMutationReference(reference)) return;
       if (!isNormalizedName(description)) {
-        failMutation(`Invalid ticket description name: ${description}`);
-        return;
+        return writeCommandFailure({
+          kind: 'message',
+          message: `Invalid ticket description name: ${description}`,
+        });
       }
-      const selected = await mutationProject(
-        workspaceFrom(program.opts().workspace),
-        cwd,
-        program.opts().project,
-        reference
-      );
-      if (selected === null) return;
+      const selected = await mutationTracker(program, cwd, reference);
+      if (!selected.ok) return writeCommandFailure(selected.failure);
       writeTicketMutation(
         await renameTicket(
-          createTracker(selected.workspace),
-          selected.project,
+          selected.value.tracker,
+          selected.value.project,
           reference,
           description
         )
@@ -172,20 +284,17 @@ export function createProgram({
     .action(async (reference, statusName) => {
       if (!validMutationReference(reference)) return;
       if (!isNormalizedName(statusName)) {
-        failMutation(`Invalid status name: ${statusName}`);
-        return;
+        return writeCommandFailure({
+          kind: 'message',
+          message: `Invalid status name: ${statusName}`,
+        });
       }
-      const selected = await mutationProject(
-        workspaceFrom(program.opts().workspace),
-        cwd,
-        program.opts().project,
-        reference
-      );
-      if (selected === null) return;
+      const selected = await mutationTracker(program, cwd, reference);
+      if (!selected.ok) return writeCommandFailure(selected.failure);
       writeTicketMutation(
         await moveTicket(
-          createTracker(selected.workspace),
-          selected.project,
+          selected.value.tracker,
+          selected.value.project,
           reference,
           statusName
         )
@@ -198,62 +307,44 @@ export function createProgram({
     .argument('<reference>', 'ticket reference')
     .action(async (reference) => {
       if (!validMutationReference(reference)) return;
-      const selected = await mutationProject(
-        workspaceFrom(program.opts().workspace),
-        cwd,
-        program.opts().project,
-        reference
-      );
-      if (selected === null) return;
+      const selected = await mutationTracker(program, cwd, reference);
+      if (!selected.ok) return writeCommandFailure(selected.failure);
       writeTicketMutation(
         await completeTicket(
-          createTracker(selected.workspace),
-          selected.project,
+          selected.value.tracker,
+          selected.value.project,
           reference
         )
       );
     });
 
   const skill = program.command('skill').description('manage agent skills');
-
-  program
-    .command('lint')
-    .description('validate the selected project')
-    .option('--json', 'emit JSON output')
-    .action(async (options, command) => {
-      const globals = command.optsWithGlobals();
-      const workspace = workspaceFrom(globals.workspace);
-      const project = await selectedProject(workspace, cwd, globals.project);
-      if (project === null) return;
-      const result = await lintProject(workspace, project);
-      if (!result.ok) {
-        writeDiagnostic(result.diagnostic.message);
-        process.exitCode = 2;
-        return;
-      }
-      writeLint(project, result.violations, options.json ?? false);
-      if (result.violations.length > 0) process.exitCode = 1;
-    });
-
   skill
     .command('install')
     .description('install the bundled Tickets skill')
     .option('--target <path>', 'exact skill directory to install into')
     .option('--force', 'overwrite an existing SKILL.md without prompting')
     .action(async ({ target, force }) => {
-      const result = await installSkill({
-        target,
-        force,
-        interactive,
-        confirmOverwrite: confirm,
-      });
+      writeSkillInstallation(
+        await installSkill(
+          { target, force },
+          { interactive, confirmOverwrite: confirm }
+        )
+      );
+    });
 
-      if (result.status === 'installed') {
-        writeSuccess(result.path);
-      } else if (result.status === 'error') {
-        writeDiagnostic(result.message);
-        process.exitCode = 2;
-      }
+  program
+    .command('lint')
+    .description('validate the selected project')
+    .option('--json', 'emit JSON output')
+    .action(async ({ json }) => {
+      const selected = await selectedTracker(program, cwd);
+      if (!selected.ok) return writeCommandFailure(selected.failure);
+      writeLintOutcome(
+        selected.value.project,
+        await lintProject(selected.value.tracker, selected.value.project),
+        Boolean(json)
+      );
     });
 
   return program;
@@ -266,10 +357,56 @@ export async function selectProjectForCli(
   return await selectProject(options);
 }
 
+async function selectedTracker(
+  program: RootCommand,
+  cwd: string,
+  validateExplicit = false
+): Promise<
+  CommandOutcome<{ readonly tracker: Tracker; readonly project: string }>
+> {
+  const globals = program.opts();
+  const tracker = trackerFor(globals.workspace);
+  if (validateExplicit) {
+    const validation = validateProject(globals.project);
+    if (!validation.ok) return validation;
+  }
+  const selected = await selectedProject(tracker, cwd, globals.project);
+  return selected.ok ? successfulSelection(tracker, selected.value) : selected;
+}
+
+async function selectedProject(
+  tracker: Tracker,
+  cwd: string,
+  explicitProject: string | undefined
+): Promise<CommandOutcome<string>> {
+  let repositoryFailure: DocumentDiagnostic | undefined;
+  const selection = await selectProject({
+    cwd,
+    explicitProject,
+    loadProjects: async () => {
+      const repositories = await loadProjectRepositories(tracker);
+      if (repositories.ok) return repositories.value;
+      repositoryFailure = repositories.diagnostic;
+      return [];
+    },
+  });
+  if (repositoryFailure !== undefined) {
+    return {
+      ok: false,
+      failure: { kind: 'diagnostic', diagnostic: repositoryFailure },
+    };
+  }
+  return selection.ok
+    ? { ok: true, value: selection.project }
+    : {
+        ok: false,
+        failure: { kind: 'project-selection', failure: selection },
+      };
+}
+
 async function loadProjectRepositories(
-  workspace: string
+  tracker: Tracker
 ): Promise<ProjectRepositoriesOutcome> {
-  const tracker = createTracker(workspace);
   const projects = await tracker.discoverProjects();
   const discoveryFailure = projects.diagnostics.at(0);
   if (discoveryFailure !== undefined) {
@@ -292,79 +429,53 @@ async function loadProjectRepositories(
   return { ok: true, value: repositories };
 }
 
-async function selectedProject(
-  workspace: string,
+async function mutationTracker(
+  program: RootCommand,
   cwd: string,
-  explicitProject: string | undefined
-): Promise<string | null> {
-  let repositoryFailure: DocumentDiagnostic | undefined;
-  const selection = await selectProject({
-    cwd,
-    explicitProject,
-    loadProjects: async () => {
-      const repositories = await loadProjectRepositories(workspace);
-      if (repositories.ok) return repositories.value;
-      repositoryFailure = repositories.diagnostic;
-      return [];
-    },
-  });
-  if (repositoryFailure !== undefined) {
-    writeDiagnostic(repositoryFailure.message);
-    process.exitCode = 2;
-    return null;
-  }
-  if (!selection.ok) {
-    writeDiagnostic(formatProjectSelectionFailure(selection));
-    process.exitCode = 2;
-    return null;
-  }
-  return selection.project;
-}
-
-async function mutationProject(
-  workspace: string,
-  cwd: string,
-  explicitProject: string | undefined,
   reference: string
-): Promise<{ readonly workspace: string; readonly project: string } | null> {
+): Promise<
+  CommandOutcome<{ readonly tracker: Tracker; readonly project: string }>
+> {
+  const tracker = trackerFor(program.opts().workspace);
   const separator = reference.indexOf('/');
   if (separator !== -1) {
-    return { workspace, project: reference.slice(0, separator) };
+    return successfulSelection(tracker, reference.slice(0, separator));
   }
-  const project = await selectedProject(workspace, cwd, explicitProject);
-  return project === null ? null : { workspace, project };
+  return selectedTracker(program, cwd);
+}
+
+function successfulSelection(
+  tracker: Tracker,
+  project: string
+): CommandOutcome<{ readonly tracker: Tracker; readonly project: string }> {
+  return { ok: true, value: { tracker, project } };
 }
 
 function validMutationReference(reference: string): boolean {
   if (isTicketReference(reference)) return true;
-  failMutation(`Invalid ticket reference: ${reference}`);
+  writeCommandFailure({
+    kind: 'message',
+    message: `Invalid ticket reference: ${reference}`,
+  });
   return false;
 }
 
-function failMutation(message: string): void {
-  writeDiagnostic(message);
-  process.exitCode = 2;
+function trackerFor(workspace: string | undefined): Tracker {
+  return createTracker(
+    resolve(workspace ?? join(homedir(), '.local/state/tickets'))
+  );
 }
 
-function trackerFor(workspace: string | undefined) {
-  return createTracker(workspaceFrom(workspace));
-}
-
-function workspaceFrom(workspace: string | undefined): string {
-  return resolve(workspace ?? join(homedir(), '.local/state/tickets'));
+function collect(value: string, previous: string[]): string[] {
+  return [...previous, value];
 }
 
 export async function run(argv: string[] = process.argv): Promise<void> {
   try {
     await createProgram().parseAsync(argv);
   } catch (error) {
-    if (!(error instanceof CommanderError)) {
-      throw error;
-    }
-
-    if (error.exitCode !== 0) {
-      process.exitCode = 2;
-    }
+    if (!(error instanceof CommanderError)) throw error;
+    assignUsageExitCode(error.exitCode);
   }
 }
 
