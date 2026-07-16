@@ -1099,12 +1099,173 @@ describe('tracker document parsing and canonical writing', () => {
       )
     ).toEqual(firstRead);
     const canonical = await readFile(ticketPath, 'utf8');
-    expect(canonical.includes('explicit-float: 1.0')).toBe(true);
+    expect(canonical.includes('explicit-float: !!float 1.0')).toBe(true);
     expect(canonical.includes('integer-float: 1.0')).toBe(true);
     expect(canonical.includes('negative-zero: -0.0')).toBe(true);
   });
 
-  test('rejects lossy YAML shapes without emitting parser output', async () => {
+  test('accepts every supported standard YAML tag and preserves complex values', async () => {
+    const workspaceRoot = await temporaryWorkspace();
+    const statusPath = join(workspaceRoot, 'alpha-project', 'todo');
+    const ticketPath = join(statusPath, '001-standard-values.md');
+    await mkdir(statusPath, { recursive: true });
+    await writeFile(
+      ticketPath,
+      [
+        '---',
+        '&root',
+        'Top-Defaults: &top-defaults {Top-Merged: value}',
+        '<<: *top-defaults',
+        '"__proto__": retained',
+        'Nested:',
+        '  outer:',
+        '    ? [one, two]',
+        '    : collection',
+        'Cycle: &cycle {self: *cycle}',
+        'Alias: *cycle',
+        'Defaults: &defaults {enabled: true}',
+        'Merged: {<<: *defaults, own: value}',
+        'Binary: !!binary SGk=',
+        'Ordered: !!omap [one: 1]',
+        'Pairs: !!pairs [one: 1, two]',
+        'Set: !!set {one: null}',
+        'Date: !!timestamp 2002-12-14',
+        'Date-Time: !!timestamp 2001-12-15T02:59:43.1Z',
+        'Explicit-Map: !!map {one: !!int 1}',
+        'Explicit-Sequence: !!seq [!!str one, !!bool true, !!float 1.0, !!null null]',
+        'Self: *root',
+        '---',
+        'Body',
+        '',
+      ].join('\n')
+    );
+
+    const { tracker, ticket } = await discoverTicket(workspaceRoot);
+    const first = await tracker.readTicket(
+      ticket.status.project.name,
+      ticket.status.name,
+      ticket.name
+    );
+    if (!first.ok) throw new Error(first.diagnostic.message);
+
+    expect(first.value.metadata.Self).toBe(first.value.metadata);
+    expect(Object.hasOwn(first.value.metadata, '__proto__')).toBe(true);
+    expect(first.value.metadata.__proto__).toBe('retained');
+    expect(first.value.metadata['Top-Merged']).toBe('value');
+    const nested = first.value.metadata.Nested;
+    if (!(nested instanceof Map)) throw new Error('Expected a nested map');
+    const outer: unknown = nested.get('outer');
+    if (!(outer instanceof Map)) throw new Error('Expected an outer map');
+    expect([...outer].at(0)).toEqual([['one', 'two'], 'collection']);
+    const cycle = first.value.metadata.Cycle;
+    if (!(cycle instanceof Map)) throw new Error('Expected a cyclic mapping');
+    expect(cycle.get('self')).toBe(cycle);
+    expect(first.value.metadata.Alias).toBe(cycle);
+    expect(first.value.metadata.Merged).toEqual(
+      new Map<unknown, unknown>([
+        ['enabled', true],
+        ['own', 'value'],
+      ])
+    );
+    expect(first.value.metadata.Binary).toEqual(Buffer.from('Hi'));
+    expect(first.value.metadata.Ordered).toEqual(new Map([['one', 1n]]));
+    expect(first.value.metadata.Pairs).toEqual([
+      new Map([['one', 1n]]),
+      new Map([['two', null]]),
+    ]);
+    expect(first.value.metadata.Set).toEqual(new Set(['one']));
+    expect(first.value.metadata.Date).toEqual(
+      new Date('2002-12-14T00:00:00.000Z')
+    );
+    expect(first.value.metadata['Date-Time']).toEqual(
+      new Date('2001-12-15T02:59:43.100Z')
+    );
+    expect(first.value.metadata['Explicit-Map']).toEqual(
+      new Map([['one', 1n]])
+    );
+    expect(first.value.metadata['Explicit-Sequence']).toEqual([
+      'one',
+      true,
+      1,
+      null,
+    ]);
+
+    expect(
+      await tracker.writeTicket(
+        ticket.status.project.name,
+        ticket.status.name,
+        ticket.name,
+        first.value
+      )
+    ).toEqual({ ok: true, value: undefined });
+    const canonical = await readFile(ticketPath, 'utf8');
+    for (const tag of [
+      '!!binary',
+      '!!omap',
+      '!!pairs',
+      '!!set',
+      '!!timestamp',
+      '!!map',
+      '!!seq',
+      '!!str',
+      '!!bool',
+      '!!float',
+      '!!null',
+    ]) {
+      expect(canonical.includes(tag)).toBe(true);
+    }
+
+    const second = await tracker.readTicket(
+      ticket.status.project.name,
+      ticket.status.name,
+      ticket.name
+    );
+    if (!second.ok) throw new Error(second.diagnostic.message);
+    expect(second.value.metadata.Self).toBe(second.value.metadata);
+    expect(Object.hasOwn(second.value.metadata, '__proto__')).toBe(true);
+    expect(second.value.metadata.__proto__).toBe('retained');
+    const secondCycle = second.value.metadata.Cycle;
+    if (!(secondCycle instanceof Map)) {
+      throw new Error('Expected a cyclic mapping');
+    }
+    expect(secondCycle.get('self')).toBe(secondCycle);
+    expect(second.value.metadata.Pairs).toEqual(first.value.metadata.Pairs);
+    expect(second.value.metadata['Date-Time']).toEqual(
+      first.value.metadata['Date-Time']
+    );
+    expect(await readFile(ticketPath, 'utf8')).toContain('Body\n');
+  });
+
+  test('leaves a document untouched when a merge-provided field cannot be removed safely', async () => {
+    const workspaceRoot = await temporaryWorkspace();
+    const statusPath = join(workspaceRoot, 'alpha-project', 'todo');
+    const ticketPath = join(statusPath, '001-merged.md');
+    await mkdir(statusPath, { recursive: true });
+    const source =
+      '---\nDefaults: &defaults {Unknown: value}\n<<: *defaults\n---\nBody\n';
+    await writeFile(ticketPath, source);
+
+    const { tracker, ticket } = await discoverTicket(workspaceRoot);
+    const document = await tracker.readTicket(
+      ticket.status.project.name,
+      ticket.status.name,
+      ticket.name
+    );
+    if (!document.ok) throw new Error(document.diagnostic.message);
+    Reflect.deleteProperty(document.value.metadata, 'Unknown');
+    const outcome = await tracker.writeTicket(
+      ticket.status.project.name,
+      ticket.status.name,
+      ticket.name,
+      document.value
+    );
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) throw new Error('Expected serialization to be refused');
+    expect(outcome.diagnostic.code).toBe('serialization-error');
+    expect(await readFile(ticketPath, 'utf8')).toBe(source);
+  });
+
+  test('rejects invalid top-level keys, unsupported tags, and invalid standard tag payloads without parser output', async () => {
     const workspaceRoot = await temporaryWorkspace();
     const statusPath = join(workspaceRoot, 'alpha-project', 'todo');
     await mkdir(statusPath, { recursive: true });
@@ -1112,9 +1273,14 @@ describe('tracker document parsing and canonical writing', () => {
       ['001-colliding-keys.md', '---\n1: numeric\n"1": string\n---\nBody\n'],
       ['002-collection-key.md', '---\n? [one, two]\n: collection\n---\nBody\n'],
       ['003-unsupported-tag.md', '---\nUnknown: !foo value\n---\nBody\n'],
-      ['004-ordered-map.md', '---\nUnknown: !!omap [one: 1]\n---\nBody\n'],
-      ['005-set.md', '---\nUnknown: !!set {one: null}\n---\nBody\n'],
-      ['006-binary.md', '---\nUnknown: !!binary SGk=\n---\nBody\n'],
+      [
+        '004-invalid-pairs.md',
+        '---\nUnknown: !!pairs [{one: 1, two: 2}]\n---\nBody\n',
+      ],
+      [
+        '005-invalid-timestamp.md',
+        '---\nUnknown: !!timestamp not-a-date\n---\nBody\n',
+      ],
     ]);
     await Promise.all(
       [...sources].map(([name, source]) =>
@@ -1142,7 +1308,6 @@ describe('tracker document parsing and canonical writing', () => {
       'malformed-ticket-yaml',
       'malformed-ticket-yaml',
       'malformed-ticket-yaml',
-      'malformed-ticket-yaml',
     ]);
     expect(warn).not.toHaveBeenCalled();
     expect(error).not.toHaveBeenCalled();
@@ -1153,24 +1318,35 @@ describe('tracker document parsing and canonical writing', () => {
     error.mockRestore();
   });
 
-  test('classifies unresolved YAML aliases as malformed metadata', async () => {
+  test('classifies unresolved YAML aliases as malformed metadata for mapping and sequence roots', async () => {
     const workspaceRoot = await temporaryWorkspace();
     const statusPath = join(workspaceRoot, 'alpha-project', 'todo');
-    const ticketPath = join(statusPath, '001-alias.md');
     await mkdir(statusPath, { recursive: true });
-    await writeFile(ticketPath, '---\nUnknown: *missing\n---\n');
+    const paths = [
+      join(statusPath, '001-mapping-alias.md'),
+      join(statusPath, '002-sequence-alias.md'),
+    ];
+    await Promise.all([
+      writeFile(paths[0], '---\nUnknown: *missing\n---\n'),
+      writeFile(paths[1], '---\n- *missing\n---\n'),
+    ]);
 
-    const { tracker, ticket } = await discoverTicket(workspaceRoot);
-    const outcome = await tracker.readTicket(
-      ticket.status.project.name,
-      ticket.status.name,
-      ticket.name
+    const { tracker, project } = await discoverProject(workspaceRoot);
+    const tickets = await tracker.discoverTickets(project.name, 'todo');
+    const outcomes = await Promise.all(
+      tickets.entries.map((ticket) =>
+        tracker.readTicket(project.name, 'todo', ticket.name)
+      )
     );
-    expect(outcome.ok).toBe(false);
-    if (outcome.ok) throw new Error('Expected malformed alias failure');
-    expect(outcome.diagnostic.path).toBe(ticketPath);
-    expect(outcome.diagnostic.code).toBe('malformed-ticket-yaml');
-    expect(outcome.diagnostic.message.includes('Unresolved alias')).toBe(true);
+    for (const [index, outcome] of outcomes.entries()) {
+      expect(outcome.ok).toBe(false);
+      if (outcome.ok) throw new Error('Expected malformed alias failure');
+      expect(outcome.diagnostic.path).toBe(paths[index]);
+      expect(outcome.diagnostic.code).toBe('malformed-ticket-yaml');
+      expect(outcome.diagnostic.message.includes('Unresolved alias')).toBe(
+        true
+      );
+    }
   });
 
   test('reports malformed and duplicate ticket YAML while other tickets remain readable', async () => {
@@ -1419,6 +1595,64 @@ describe('tracker ticket mutations', () => {
       Parent: 'alpha-project/001-new-name',
       'Blocked-By': ['alpha-project/001-new-name'],
     });
+  });
+
+  test('preserves complex unknown YAML values during relationship rewrites', async () => {
+    const workspaceRoot = await temporaryWorkspace();
+    const todo = join(workspaceRoot, 'alpha-project', 'todo');
+    await mkdir(todo, { recursive: true });
+    await writeFile(join(todo, '001-old-name.md'), '---\n---\nTarget\n');
+    const childPath = join(todo, '002-child.md');
+    await writeFile(
+      childPath,
+      [
+        '---',
+        'Parent: &old-parent 001-old-name',
+        'Blocked-By: &old-blockers [*old-parent]',
+        'Echo: *old-parent',
+        'Echo-Blocked: *old-blockers',
+        'Nested: {? [one, two]: value}',
+        'Cycle: &cycle {self: *cycle}',
+        'Ordered: !!omap [one: 1]',
+        'Pairs: !!pairs [one: 1, two]',
+        'When: !!timestamp 2002-12-14',
+        '---',
+        'Child',
+        '',
+      ].join('\n')
+    );
+
+    const outcome = await createTracker(workspaceRoot).renameTicket(
+      'alpha-project',
+      '001-old-name',
+      'new-name'
+    );
+    expect(outcome.ok).toBe(true);
+
+    const rewritten = await readFile(childPath, 'utf8');
+    expect(rewritten).toContain('Parent: &old-parent 001-new-name');
+    expect(rewritten).toContain('Echo: &old-parent-preserved 001-old-name');
+    expect(rewritten).toContain('!!omap');
+    expect(rewritten).toContain('!!pairs');
+    expect(rewritten).toContain('!!timestamp');
+    const child = await createTracker(workspaceRoot).readTicket(
+      'alpha-project',
+      'todo',
+      '002-child'
+    );
+    if (!child.ok) throw new Error(child.diagnostic.message);
+    expect(child.value.metadata.Parent).toBe('001-new-name');
+    expect(child.value.metadata['Blocked-By']).toEqual(['001-new-name']);
+    expect(child.value.metadata.Echo).toBe('001-old-name');
+    expect(child.value.metadata['Echo-Blocked']).toEqual(['001-old-name']);
+    const cycle = child.value.metadata.Cycle;
+    if (!(cycle instanceof Map)) throw new Error('Expected a cyclic mapping');
+    expect(cycle.get('self')).toBe(cycle);
+    expect(child.value.metadata.Nested).toBeInstanceOf(Map);
+    expect(child.value.metadata.Pairs).toEqual([
+      new Map([['one', 1n]]),
+      new Map([['two', null]]),
+    ]);
   });
 
   test('moves are no-ops in place, reject collisions, and move successfully', async () => {

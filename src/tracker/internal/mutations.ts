@@ -1,11 +1,11 @@
 import { lstat, mkdir, rename as renameFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
-import type {
-  DocumentDiagnostic,
-  Outcome,
-  TrackerDocument,
+import type { DocumentDiagnostic, Outcome } from './documents.ts';
+import {
+  readTrackerDocument,
+  replaceTrackerMetadata,
+  writeTrackerDocument,
 } from './documents.ts';
-import { readTrackerDocument, writeTrackerDocument } from './documents.ts';
 import type { Project, Status, Ticket } from './discovery.ts';
 import {
   discoverProjects,
@@ -363,7 +363,7 @@ async function updateReferences(
   }
 
   if (!changed) return { ok: true, value: undefined };
-  const rewritten = { ...document.value, metadata } satisfies TrackerDocument;
+  const rewritten = replaceTrackerMetadata(document.value, metadata);
   return writeTrackerDocument(ticket.path, rewritten);
 }
 

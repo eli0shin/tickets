@@ -2,10 +2,18 @@ import { link, open, readFile, unlink, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import {
+  Alias,
   Document,
+  isMap,
+  isNode,
   isScalar,
+  isSeq,
   parseDocument,
   visit,
+  type Node,
+  type Pair,
+  type Scalar,
+  type YAMLMap,
   type YAMLParseError,
 } from 'yaml';
 
@@ -17,6 +25,13 @@ export type TrackerDocument = {
 };
 
 export type DocumentKind = 'project' | 'ticket';
+
+type ParsedMetadata = {
+  readonly document: Document;
+  readonly original: Metadata;
+};
+
+const parsedMetadata = new WeakMap<object, ParsedMetadata>();
 
 export type DocumentDiagnosticCode =
   | 'duplicate-project-key'
@@ -81,6 +96,8 @@ export function parseTrackerDocument(
 
   const yamlSource = remainder.slice(0, closing.index);
   const document = parseDocument(yamlSource, {
+    schema: 'core',
+    customTags: ['binary', 'merge', 'omap', 'pairs', 'set', 'timestamp'],
     intAsBigInt: true,
     prettyErrors: false,
     uniqueKeys: true,
@@ -106,32 +123,7 @@ export function parseTrackerDocument(
       },
     };
   }
-  if (!hasOnlyStringKeys(document)) {
-    return {
-      ok: false,
-      diagnostic: {
-        path,
-        code: malformedCode(kind),
-        message: 'YAML mapping keys must be strings',
-      },
-    };
-  }
-  if (!hasOnlySupportedTags(document)) {
-    return {
-      ok: false,
-      diagnostic: {
-        path,
-        code: malformedCode(kind),
-        message: 'YAML front matter contains an unsupported tag',
-      },
-    };
-  }
-
-  const conversion = convertToMetadata(
-    document.toJS.bind(document),
-    path,
-    kind
-  );
+  const conversion = convertToMetadata(document, path, kind);
   if (!conversion.ok) return conversion;
 
   let metadata = conversion.value;
@@ -146,17 +138,7 @@ export function parseTrackerDocument(
       },
     };
   }
-  if (!isSupportedValue(metadata, new WeakSet())) {
-    return {
-      ok: false,
-      diagnostic: {
-        path,
-        code: malformedCode(kind),
-        message: 'YAML front matter contains an unsupported value',
-      },
-    };
-  }
-
+  parsedMetadata.set(metadata, { document, original: { ...metadata } });
   return {
     ok: true,
     value: {
@@ -176,6 +158,15 @@ export async function readTrackerDocument(
   } catch (error) {
     return filesystemFailure(path, error);
   }
+}
+
+export function replaceTrackerMetadata(
+  document: TrackerDocument,
+  metadata: Metadata
+): TrackerDocument {
+  const parsed = parsedMetadata.get(document.metadata);
+  if (parsed !== undefined) parsedMetadata.set(metadata, parsed);
+  return { ...document, metadata };
 }
 
 export async function writeTrackerDocument(
@@ -300,51 +291,151 @@ function isMetadata(value: unknown): value is Record<string, unknown> {
   );
 }
 
-function hasOnlyStringKeys(
-  document: ReturnType<typeof parseDocument>
-): boolean {
-  let valid = true;
-  visit(document, {
+function convertToMetadata(
+  document: ReturnType<typeof parseDocument>,
+  path: string,
+  kind: DocumentKind
+): Outcome<unknown> {
+  if (document.contents === null) return { ok: true, value: null };
+
+  try {
+    if (!isMap(document.contents)) {
+      return { ok: true, value: document.toJS() };
+    }
+
+    const mapAsMap = document.contents.items.some(
+      (pair) => !isStringKey(pair) || hasNonStringKey(pair.value)
+    );
+    const converted: unknown = document.toJS({ mapAsMap });
+    if (!(converted instanceof Map)) return { ok: true, value: converted };
+    return materializeMetadata(converted, path, kind);
+  } catch (error) {
+    return malformedFailure(path, kind, error);
+  }
+}
+
+function materializeMetadata(
+  root: Map<unknown, unknown>,
+  path: string,
+  kind: DocumentKind
+): Outcome<Metadata> {
+  if ([...root.keys()].some((key) => typeof key !== 'string')) {
+    return {
+      ok: false,
+      diagnostic: {
+        path,
+        code: malformedCode(kind),
+        message: 'YAML front matter keys must be strings',
+      },
+    };
+  }
+
+  const metadata = Object.fromEntries<unknown>([]);
+  const transformed = new WeakMap<object, unknown>([[root, metadata]]);
+  for (const [key, value] of root) {
+    if (typeof key === 'string') {
+      Object.defineProperty(metadata, key, {
+        configurable: true,
+        enumerable: true,
+        value: remapGraph(value, transformed),
+        writable: true,
+      });
+    }
+  }
+  return { ok: true, value: metadata };
+}
+
+function remapGraph(
+  value: unknown,
+  transformed: WeakMap<object, unknown>
+): unknown {
+  if (value === null || typeof value !== 'object') return value;
+  const existing = transformed.get(value);
+  if (existing !== undefined) return existing;
+
+  if (Array.isArray(value)) {
+    const result: unknown[] = [];
+    transformed.set(value, result);
+    result.push(...value.map((item) => remapGraph(item, transformed)));
+    return result;
+  }
+  if (value instanceof Map) {
+    const result = new Map<unknown, unknown>();
+    transformed.set(value, result);
+    for (const [key, item] of value) {
+      result.set(remapGraph(key, transformed), remapGraph(item, transformed));
+    }
+    return result;
+  }
+  if (value instanceof Set) {
+    const result = new Set<unknown>();
+    transformed.set(value, result);
+    for (const item of value) result.add(remapGraph(item, transformed));
+    return result;
+  }
+  return value;
+}
+
+function isStringKey(pair: Pair): pair is Pair<Scalar<string>> {
+  return isScalar(pair.key) && typeof pair.key.value === 'string';
+}
+
+function hasNonStringKey(node: unknown): boolean {
+  if (!isNode(node)) return false;
+  let found = false;
+  visit(node, {
     Pair: (_key, pair) => {
       if (!isScalar(pair.key) || typeof pair.key.value !== 'string') {
-        valid = false;
+        found = true;
         return visit.BREAK;
       }
     },
   });
-  return valid;
+  return found;
 }
 
-const SUPPORTED_TAGS = new Set([
-  'tag:yaml.org,2002:bool',
-  'tag:yaml.org,2002:float',
-  'tag:yaml.org,2002:int',
-  'tag:yaml.org,2002:map',
-  'tag:yaml.org,2002:null',
-  'tag:yaml.org,2002:seq',
-  'tag:yaml.org,2002:str',
-]);
+function serializeDocument(
+  path: string,
+  document: TrackerDocument
+): Outcome<string> {
+  try {
+    const parsed = parsedMetadata.get(document.metadata);
+    if (
+      Object.getPrototypeOf(document.metadata) !== Object.prototype ||
+      (parsed === undefined &&
+        !isSerializableValue(document.metadata, new WeakSet()))
+    ) {
+      return serializationFailure(
+        path,
+        'YAML front matter contains an unsupported value'
+      );
+    }
+    const yamlDocument =
+      parsed === undefined
+        ? new Document(document.metadata)
+        : reconcileMetadata(parsed, document.metadata);
+    visit(yamlDocument, {
+      Scalar: (_key, scalar) => {
+        if (
+          typeof scalar.value === 'number' &&
+          Number.isInteger(scalar.value)
+        ) {
+          scalar.minFractionDigits = 1;
+        }
+      },
+    });
+    const yaml = yamlDocument.toString({ lineWidth: 0, nullStr: '' });
+    const body = document.body.replaceAll('\r\n', '\n').replaceAll('\r', '\n');
+    return { ok: true, value: `---\n${yaml}---\n${body}` };
+  } catch (error) {
+    return serializationFailure(path, errorMessage(error));
+  }
+}
 
-function hasOnlySupportedTags(
-  document: ReturnType<typeof parseDocument>
+function isSerializableValue(
+  value: unknown,
+  ancestors: WeakSet<object>
 ): boolean {
-  let valid = true;
-  visit(document, {
-    Node: (_key, node) => {
-      if (
-        'tag' in node &&
-        node.tag !== undefined &&
-        !SUPPORTED_TAGS.has(node.tag)
-      ) {
-        valid = false;
-        return visit.BREAK;
-      }
-    },
-  });
-  return valid;
-}
-
-function isSupportedValue(value: unknown, ancestors: WeakSet<object>): boolean {
   if (
     value === null ||
     typeof value === 'string' ||
@@ -354,8 +445,7 @@ function isSupportedValue(value: unknown, ancestors: WeakSet<object>): boolean {
   ) {
     return true;
   }
-  if (typeof value !== 'object') return false;
-  if (ancestors.has(value)) return false;
+  if (typeof value !== 'object' || ancestors.has(value)) return false;
 
   const array = Array.isArray(value);
   if (!array && Object.getPrototypeOf(value) !== Object.prototype) return false;
@@ -379,57 +469,133 @@ function isSupportedValue(value: unknown, ancestors: WeakSet<object>): boolean {
     return (
       descriptor?.enumerable === true &&
       'value' in descriptor &&
-      isSupportedValue(descriptor.value, ancestors)
+      isSerializableValue(descriptor.value, ancestors)
     );
   });
   ancestors.delete(value);
   return valid;
 }
 
-function convertToMetadata(
-  convert: () => unknown,
-  path: string,
-  kind: DocumentKind
-): Outcome<unknown> {
-  try {
-    return { ok: true, value: convert() };
-  } catch (error) {
-    return malformedFailure(path, kind, error);
+function reconcileMetadata(
+  parsed: ParsedMetadata,
+  metadata: Metadata
+): Document<Node, boolean> {
+  const document = parsed.document.clone();
+  if (!isMap(document.contents)) return new Document(metadata);
+
+  const map: YAMLMap = document.contents;
+  const replacedKeys = new Set(
+    Object.keys(parsed.original).filter(
+      (key) =>
+        !Object.hasOwn(metadata, key) ||
+        !Object.is(parsed.original[key], metadata[key])
+    )
+  );
+  const replacedAliases = aliasesWithinFields(map, replacedKeys);
+  for (const key of replacedKeys) {
+    preserveAliasesOfReplacedValue(document, map, key, replacedAliases);
   }
+
+  for (const key of Object.keys(parsed.original)) {
+    if (!Object.hasOwn(metadata, key)) {
+      if (!hasExplicitKey(map, key)) {
+        throw new Error(`Cannot remove YAML merge-provided field: ${key}`);
+      }
+      map.delete(key);
+    }
+  }
+  for (const [key, value] of Object.entries(metadata)) {
+    if (!Object.is(parsed.original[key], value)) map.set(key, value);
+  }
+  return document;
 }
 
-function serializeDocument(
-  path: string,
-  document: TrackerDocument
-): Outcome<string> {
-  try {
-    if (
-      Object.getPrototypeOf(document.metadata) !== Object.prototype ||
-      !isSupportedValue(document.metadata, new WeakSet())
-    ) {
-      return serializationFailure(
-        path,
-        'YAML front matter contains an unsupported value'
-      );
-    }
+function hasExplicitKey(map: YAMLMap, key: string): boolean {
+  return map.items.some((item) => isScalar(item.key) && item.key.value === key);
+}
 
-    const yamlDocument = new Document(document.metadata);
-    visit(yamlDocument, {
-      Scalar: (_key, scalar) => {
-        if (
-          typeof scalar.value === 'number' &&
-          Number.isInteger(scalar.value)
-        ) {
-          scalar.minFractionDigits = 1;
-        }
+function aliasesWithinFields(
+  map: YAMLMap,
+  fields: ReadonlySet<string>
+): ReadonlySet<Alias> {
+  const aliases = new Set<Alias>();
+  for (const pair of map.items) {
+    if (
+      !isScalar(pair.key) ||
+      typeof pair.key.value !== 'string' ||
+      !fields.has(pair.key.value) ||
+      !isNode(pair.value)
+    ) {
+      continue;
+    }
+    visit(pair.value, {
+      Alias: (_visitKey, alias) => {
+        aliases.add(alias);
       },
     });
-    const yaml = yamlDocument.toString({ lineWidth: 0, nullStr: '' });
-    const body = document.body.replaceAll('\r\n', '\n').replaceAll('\r', '\n');
-    return { ok: true, value: `---\n${yaml}---\n${body}` };
-  } catch (error) {
-    return serializationFailure(path, errorMessage(error));
   }
+  return aliases;
+}
+
+function preserveAliasesOfReplacedValue(
+  document: Document<Node, boolean>,
+  map: YAMLMap,
+  key: string,
+  replacedAliases: ReadonlySet<Alias>
+): void {
+  const pair = map.items.find(
+    (item) => isScalar(item.key) && item.key.value === key
+  );
+  const value = pair?.value;
+  if (
+    (!isScalar(value) && !isMap(value) && !isSeq(value)) ||
+    value.anchor === undefined
+  ) {
+    return;
+  }
+
+  const source = value.anchor;
+  const aliases: Alias[] = [];
+  const anchors = new Set<string>();
+  visit(document, {
+    Node: (_visitKey, node) => {
+      if ('anchor' in node && typeof node.anchor === 'string') {
+        anchors.add(node.anchor);
+      }
+    },
+    Alias: (_visitKey, alias) => {
+      if (alias.source === source && !replacedAliases.has(alias)) {
+        aliases.push(alias);
+      }
+    },
+  });
+  if (aliases.length === 0) return;
+
+  const anchor = uniqueAnchor(`${source}-preserved`, anchors);
+  const preserved = document.createNode(value.toJS(document));
+  if (!isScalar(preserved) && !isMap(preserved) && !isSeq(preserved)) return;
+  preserved.anchor = anchor;
+  let first = true;
+  visit(document, {
+    Alias: (_visitKey, alias) => {
+      if (!aliases.includes(alias)) return;
+      if (first) {
+        first = false;
+        return preserved;
+      }
+      return new Alias(anchor);
+    },
+  });
+}
+
+function uniqueAnchor(candidate: string, anchors: ReadonlySet<string>): string {
+  let anchor = candidate;
+  let suffix = 2;
+  while (anchors.has(anchor)) {
+    anchor = `${candidate}-${suffix}`;
+    suffix += 1;
+  }
+  return anchor;
 }
 
 function serializationFailure<T>(path: string, message: string): Outcome<T> {
