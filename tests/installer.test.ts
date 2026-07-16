@@ -7,6 +7,7 @@ import {
   readdir,
   rm,
   stat,
+  symlink,
   writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -29,6 +30,7 @@ async function fixture(
   home: string;
   path: string;
   curlPath: string;
+  mvPath: string;
   downloadedUrlPath: string;
 }> {
   const root = await mkdtemp(join(tmpdir(), 'tickets-installer-'));
@@ -37,6 +39,7 @@ async function fixture(
   const home = join(root, 'home');
   const downloadedUrlPath = join(root, 'downloaded-url');
   const curlPath = join(bin, 'curl');
+  const mvPath = join(bin, 'mv');
   await mkdir(bin);
 
   await Bun.write(
@@ -53,6 +56,7 @@ async function fixture(
     home,
     path: `${bin}:${process.env.PATH ?? '/usr/bin:/bin'}`,
     curlPath,
+    mvPath,
     downloadedUrlPath,
   };
 }
@@ -106,6 +110,66 @@ describe('binary installer', () => {
       expect(await readdir(join(home, '.local/bin'))).toEqual(['tickets']);
     });
   }
+
+  for (const destinationKind of ['directory', 'symlink to a directory']) {
+    test(`rejects a ${destinationKind} at the binary destination`, async () => {
+      const { home, path, downloadedUrlPath } = await fixture(
+        'Linux',
+        'x86_64'
+      );
+      const installDirectory = join(home, '.local/bin');
+      const installedPath = join(installDirectory, 'tickets');
+      await mkdir(installDirectory, { recursive: true });
+
+      if (destinationKind === 'directory') {
+        await mkdir(installedPath);
+      } else {
+        const directoryTarget = join(home, 'existing-directory');
+        await mkdir(directoryTarget);
+        await symlink(directoryTarget, installedPath, 'dir');
+      }
+
+      expect(await runInstaller(home, path)).toEqual({
+        stdout: '',
+        stderr: `Cannot install tickets: ${installedPath} is a directory\n`,
+        exitCode: 1,
+      });
+      expect(await Bun.file(downloadedUrlPath).exists()).toBe(false);
+    });
+  }
+
+  test('rejects a destination that becomes a directory during download', async () => {
+    const { home, path, curlPath } = await fixture('Linux', 'x86_64');
+    const installDirectory = join(home, '.local/bin');
+    const installedPath = join(installDirectory, 'tickets');
+    await writeFile(curlPath, `#!/bin/sh\nmkdir '${installedPath}'\nexit 0\n`);
+    await chmod(curlPath, 0o755);
+
+    expect(await runInstaller(home, path)).toEqual({
+      stdout: '',
+      stderr: `Cannot install tickets: ${installedPath} is a directory\n`,
+      exitCode: 1,
+    });
+    expect(await readdir(installDirectory)).toEqual(['tickets']);
+  });
+
+  test('rejects a destination that becomes a directory during the move', async () => {
+    const { home, path, mvPath } = await fixture('Linux', 'x86_64');
+    const installDirectory = join(home, '.local/bin');
+    const installedPath = join(installDirectory, 'tickets');
+    await writeFile(
+      mvPath,
+      '#!/bin/sh\nmkdir "$3"\nexec /bin/mv -f "$2" "$3"\n'
+    );
+    await chmod(mvPath, 0o755);
+
+    expect(await runInstaller(home, path)).toEqual({
+      stdout: '',
+      stderr: `Cannot install tickets: ${installedPath} is a directory\n`,
+      exitCode: 1,
+    });
+    expect(await readdir(installedPath)).toEqual([]);
+  });
 
   test('preserves an existing binary when a download fails', async () => {
     const { home, path, curlPath } = await fixture('Linux', 'x86_64');

@@ -4,6 +4,14 @@ set -euo pipefail
 REPO="eli0shin/tickets"
 INSTALL_DIR="${HOME}/.local/bin"
 BINARY_NAME="tickets"
+DESTINATION="${INSTALL_DIR}/${BINARY_NAME}"
+
+require_file_destination() {
+  if [[ -d "$DESTINATION" ]]; then
+    echo "Cannot install ${BINARY_NAME}: ${DESTINATION} is a directory" >&2
+    exit 1
+  fi
+}
 
 OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
 case "$OS" in
@@ -29,14 +37,21 @@ ARTIFACT="tickets-${OS}-${ARCH}"
 DOWNLOAD_URL="https://github.com/${REPO}/releases/latest/download/${ARTIFACT}"
 
 mkdir -p "$INSTALL_DIR"
+require_file_destination
+
 TEMP_FILE="$(mktemp "${INSTALL_DIR}/.${BINARY_NAME}.XXXXXX")"
 trap 'rm -f "$TEMP_FILE"' EXIT
 curl -fsSL "$DOWNLOAD_URL" -o "$TEMP_FILE"
 chmod +x "$TEMP_FILE"
-mv -f "$TEMP_FILE" "${INSTALL_DIR}/${BINARY_NAME}"
+require_file_destination
+mv -f "$TEMP_FILE" "$DESTINATION"
+if [[ -d "$DESTINATION" ]]; then
+  rm -f "${DESTINATION}/${TEMP_FILE##*/}"
+  require_file_destination
+fi
 trap - EXIT
 
-echo "Installed ${BINARY_NAME} to ${INSTALL_DIR}/${BINARY_NAME}"
+echo "Installed ${BINARY_NAME} to ${DESTINATION}"
 
 if [[ ":$PATH:" != *":${INSTALL_DIR}:"* ]]; then
   echo ""
