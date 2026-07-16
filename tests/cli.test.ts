@@ -1564,27 +1564,52 @@ describe('ticket mutation commands', () => {
   });
 });
 
-test('notify-mode update messages render after command output', async () => {
-  const workspace = join(temporaryDirectory, 'empty-notify-workspace');
-  await mkdir(workspace);
-  expect(
-    await captureProcessOutput(async () => {
-      await createProgram({
-        updateMessage: 'Update available: v1.2.3',
-      }).parseAsync([
-        'node',
-        'tickets',
+test('notify mode preserves JSON and raw stdout contracts', async () => {
+  const workspace = join(temporaryDirectory, 'notify-output-workspace');
+  const projectPath = join(workspace, 'alpha-project');
+  const ticketPath = join(projectPath, 'todo/001-original.md');
+  await mkdir(join(projectPath, 'todo'), { recursive: true });
+  await writeFile(
+    join(projectPath, 'project.md'),
+    '---\nDefault-Status: todo\n---\n'
+  );
+  await writeFile(ticketPath, ticketSource);
+
+  for (const [arguments_, stdout] of [
+    [
+      ['--workspace', workspace, 'project', 'list', '--json'],
+      `${JSON.stringify(
+        {
+          projects: [{ name: 'alpha-project', path: projectPath }],
+        },
+        null,
+        2
+      )}\n`,
+    ],
+    [
+      [
         '--workspace',
         workspace,
-        'project',
-        'list',
-      ]);
-    })
-  ).toEqual({
-    stdout: 'Update available: v1.2.3\n',
-    stderr: '',
-    exitCode: undefined,
-  });
+        '--project',
+        'alpha-project',
+        'show',
+        '001-original',
+      ],
+      ticketSource,
+    ],
+  ] as const) {
+    expect(
+      await captureProcessOutput(async () => {
+        await createProgram({
+          updateMessage: 'Update available: v1.2.3',
+        }).parseAsync(['node', 'tickets', ...arguments_]);
+      })
+    ).toEqual({
+      stdout,
+      stderr: 'Update available: v1.2.3\n',
+      exitCode: undefined,
+    });
+  }
 });
 
 test('successful manual update suppresses a pending notification', async () => {

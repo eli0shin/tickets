@@ -102,7 +102,7 @@ export function writeUpdateOutcome(result: UpdateCommandOutcome): void {
 }
 
 export function writeUpdateMessage(message: string | undefined): void {
-  if (message) writeSuccess(message);
+  if (message) writeDiagnostic(message);
 }
 
 export function formatProjectSelectionFailure(

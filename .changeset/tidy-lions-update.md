@@ -1,5 +1,5 @@
 ---
-'tickets': patch
+'tickets': minor
 ---
 
-Add an explicit `tickets update` command for installing the latest native release.
+Add explicit native self-updates plus the complete automatic update lifecycle with persisted checks, silent installation, notifications, configurable intervals, and opt-out behavior.
