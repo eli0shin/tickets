@@ -77,6 +77,10 @@ jobs:
         if: steps.check-release.outputs.needs_binaries == 'true'
         run: git checkout --detach --force "refs/tags/${{ steps.check-release.outputs.version }}"
 
+      - name: Clean release dependencies
+        if: steps.check-release.outputs.needs_binaries == 'true'
+        run: rm -rf node_modules
+
       - name: Install release dependencies
         if: steps.check-release.outputs.needs_binaries == 'true'
         run: bun install --frozen-lockfile

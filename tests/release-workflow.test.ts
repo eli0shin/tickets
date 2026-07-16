@@ -74,9 +74,16 @@ describe('release workflow', () => {
     expect(detection.run).toContain('needs_binaries=$NEEDS_BINARIES');
     expect(detection.run).toContain('version=$VERSION');
 
+    const changesets = namedStep(
+      steps,
+      'Create Release Pull Request or Publish'
+    );
+    expect(changesets.uses).toBe('changesets/action@v1');
+
     const upload = namedStep(steps, 'Upload binaries to release');
     const releaseSteps = [
       namedStep(steps, 'Check out release commit'),
+      namedStep(steps, 'Clean release dependencies'),
       namedStep(steps, 'Install release dependencies'),
       namedStep(steps, 'Build linux-x64'),
       namedStep(steps, 'Build linux-arm64'),
@@ -91,13 +98,14 @@ describe('release workflow', () => {
     expect(releaseSteps[0]?.run).toBe(
       'git checkout --detach --force "refs/tags/${{ steps.check-release.outputs.version }}"'
     );
-    expect(releaseSteps[1]?.run).toBe('bun install --frozen-lockfile');
+    expect(releaseSteps[1]?.run).toBe('rm -rf node_modules');
+    expect(releaseSteps[2]?.run).toBe('bun install --frozen-lockfile');
 
     for (const [step, target, artifact] of [
-      [releaseSteps[2], 'bun-linux-x64', artifacts[0]],
-      [releaseSteps[3], 'bun-linux-arm64', artifacts[1]],
-      [releaseSteps[4], 'bun-darwin-x64', artifacts[2]],
-      [releaseSteps[5], 'bun-darwin-arm64', artifacts[3]],
+      [releaseSteps[3], 'bun-linux-x64', artifacts[0]],
+      [releaseSteps[4], 'bun-linux-arm64', artifacts[1]],
+      [releaseSteps[5], 'bun-darwin-x64', artifacts[2]],
+      [releaseSteps[6], 'bun-darwin-arm64', artifacts[3]],
     ] as const) {
       expect(step.run).toBe(
         `bun build src/cli.ts --compile --target=${target} --outfile ${artifact}`
@@ -110,14 +118,10 @@ describe('release workflow', () => {
     );
     expect(upload.run).toContain('--clobber');
 
-    const detectionIndex = steps.indexOf(detection);
-    for (const step of releaseSteps) {
-      expect(steps.indexOf(step)).toBeGreaterThan(detectionIndex);
-    }
-    let previousIndex = detectionIndex;
-    for (const step of releaseSteps) {
+    let previousIndex = -1;
+    for (const step of [changesets, detection, ...releaseSteps]) {
       const index = steps.indexOf(step);
-      expect(index).toBe(previousIndex + 1);
+      expect(index).toBeGreaterThan(previousIndex);
       previousIndex = index;
     }
   });
