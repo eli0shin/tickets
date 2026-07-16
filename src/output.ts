@@ -21,7 +21,7 @@ export function formatProjectSelectionFailure(
     case 'git-error':
       return `Cannot discover a project: Git could not ${failure.operation === 'inspect-worktree' ? 'inspect the current worktree' : 'read its origin'} (${JSON.stringify(failure.detail)}); use --project.`;
     case 'invalid-origin':
-      return `Cannot discover a project: origin has an invalid remote (${JSON.stringify(failure.origin)}); use --project.`;
+      return 'Cannot discover a project: origin has an invalid remote; use --project.';
     case 'no-match':
       return `Cannot discover a project: no project matches origin ${JSON.stringify(failure.origin)}; use --project.`;
     case 'ambiguous':

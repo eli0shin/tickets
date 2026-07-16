@@ -56,6 +56,18 @@ describe('remote normalization', () => {
     ],
     ['https://example.com:8443/Owner/Repo', 'example.com:8443/owner/repo'],
     ['git@example.com:Owner/Repo ', 'example.com/owner/repo '],
+    [
+      'https://münich.example/Owner/Repo.git',
+      'xn--mnich-kva.example/owner/repo',
+    ],
+    ['git@münich.example:Owner/Repo.git', 'xn--mnich-kva.example/owner/repo'],
+    [
+      'ssh://git@münich.example/Owner/Repo.git',
+      'xn--mnich-kva.example/owner/repo',
+    ],
+    ['git://münich.example/Owner/Repo.git', 'xn--mnich-kva.example/owner/repo'],
+    ['ssh://git@[2001:db8::1]/Owner/Repo.git', '[2001:db8::1]/owner/repo'],
+    ['git@[2001:0db8:0:0:0:0:0:1]:Owner/Repo.git', '[2001:db8::1]/owner/repo'],
   ];
   for (const [remote, expected] of normalizationCases) {
     test(`normalizes ${remote}`, () => {
@@ -71,6 +83,9 @@ describe('remote normalization', () => {
     'https://example.com',
     'https://example.com/.git',
     'https://example.com/owner/repo?ref=main',
+    'git@exa%2Fmple.com:owner/repo',
+    'git@exa%EF%BC%8Fmple.com:owner/repo',
+    'git@exa%252Fmple.com:owner/repo',
   ];
   for (const remote of invalidRemotes) {
     test(`rejects invalid host/path remote ${remote}`, () => {
@@ -94,7 +109,7 @@ describe('project selection', () => {
       expect(
         await selectProject({
           cwd: nestedDirectory,
-          projects: [
+          loadProjects: async () => [
             { name: 'other', gitRepo: 'https://elsewhere.test/owner/repo' },
             {
               name: 'selected',
@@ -105,6 +120,40 @@ describe('project selection', () => {
       ).toEqual({ ok: true, project: 'selected' });
     });
   }
+
+  const idnUriRemotes = [
+    'https://münich.example/owner/repo',
+    'ssh://git@münich.example/owner/repo',
+    'git://münich.example/owner/repo',
+  ];
+  for (const uriRemote of idnUriRemotes) {
+    test(`matches ${uriRemote} with an equivalent SCP IDN`, async () => {
+      await setOrigin('git@münich.example:Owner/Repo.git');
+
+      expect(
+        await selectProject({
+          cwd: repository,
+          loadProjects: async () => [{ name: 'selected', gitRepo: uriRemote }],
+        })
+      ).toEqual({ ok: true, project: 'selected' });
+    });
+  }
+
+  test('matches equivalent URI and SCP IPv6 hosts', async () => {
+    await setOrigin('git@[2001:0db8:0:0:0:0:0:1]:Owner/Repo.git');
+
+    expect(
+      await selectProject({
+        cwd: repository,
+        loadProjects: async () => [
+          {
+            name: 'selected',
+            gitRepo: 'ssh://git@[2001:db8::1]/owner/repo',
+          },
+        ],
+      })
+    ).toEqual({ ok: true, project: 'selected' });
+  });
 
   test('uses only the origin fetch URL', async () => {
     await git([
@@ -117,7 +166,7 @@ describe('project selection', () => {
     expect(
       await selectProject({
         cwd: repository,
-        projects: [
+        loadProjects: async () => [
           { name: 'project', gitRepo: 'https://example.com/owner/repo.git' },
         ],
       })
@@ -155,7 +204,7 @@ describe('project selection', () => {
     expect(
       await selectProject({
         cwd: repository,
-        projects: [
+        loadProjects: async () => [
           { name: 'without-space', gitRepo: 'git@example.com:owner/repo' },
           { name: 'with-space', gitRepo: 'git@example.com:owner/repo ' },
         ],
@@ -175,7 +224,7 @@ describe('project selection', () => {
     expect(
       await selectProject({
         cwd: spacedRepository,
-        projects: [
+        loadProjects: async () => [
           { name: 'selected', gitRepo: 'https://example.com/owner/repo' },
         ],
       })
@@ -187,7 +236,7 @@ describe('project selection', () => {
     const detail = `fatal: cannot change to '${missingDirectory}': No such file or directory`;
     const outcome = await selectProject({
       cwd: missingDirectory,
-      projects: [],
+      loadProjects: async () => [],
     });
 
     expect(outcome).toEqual({
@@ -206,7 +255,10 @@ describe('project selection', () => {
     const bareRepository = join(temporaryDirectory, 'bare.git');
     await mkdir(bareRepository);
     await git(['init', '--bare'], bareRepository);
-    const outcome = await selectProject({ cwd: bareRepository, projects: [] });
+    const outcome = await selectProject({
+      cwd: bareRepository,
+      loadProjects: async () => [],
+    });
 
     expect(outcome).toEqual({ ok: false, reason: 'not-a-worktree' });
     if (outcome.ok) throw new Error('Expected project discovery to fail');
@@ -215,10 +267,15 @@ describe('project selection', () => {
     );
   });
 
-  test('fails outside a worktree and directs the caller to --project', async () => {
+  test('reports a missing worktree before loading project metadata', async () => {
     const outside = join(temporaryDirectory, 'outside');
     await mkdir(outside);
-    const outcome = await selectProject({ cwd: outside, projects: [] });
+    const outcome = await selectProjectForCli({
+      cwd: outside,
+      loadProjects: () => {
+        throw new Error('Project metadata must not be loaded');
+      },
+    });
 
     expect(outcome).toEqual({ ok: false, reason: 'not-a-worktree' });
     if (outcome.ok) throw new Error('Expected project discovery to fail');
@@ -228,7 +285,10 @@ describe('project selection', () => {
   });
 
   test('fails when the worktree has no origin', async () => {
-    const outcome = await selectProject({ cwd: repository, projects: [] });
+    const outcome = await selectProject({
+      cwd: repository,
+      loadProjects: async () => [],
+    });
 
     expect(outcome).toEqual({ ok: false, reason: 'missing-origin' });
     if (outcome.ok) throw new Error('Expected project discovery to fail');
@@ -237,18 +297,17 @@ describe('project selection', () => {
     );
   });
 
-  test('fails when origin is not a valid remote', async () => {
-    await setOrigin('not-a-remote');
-    const outcome = await selectProject({ cwd: repository, projects: [] });
-
-    expect(outcome).toEqual({
-      ok: false,
-      reason: 'invalid-origin',
-      origin: 'not-a-remote',
+  test('does not expose credentials from an invalid origin', async () => {
+    await setOrigin('https://user:token@example.com?x=1');
+    const outcome = await selectProject({
+      cwd: repository,
+      loadProjects: async () => [],
     });
+
+    expect(outcome).toEqual({ ok: false, reason: 'invalid-origin' });
     if (outcome.ok) throw new Error('Expected project discovery to fail');
     expect(formatProjectSelectionFailure(outcome)).toBe(
-      'Cannot discover a project: origin has an invalid remote ("not-a-remote"); use --project.'
+      'Cannot discover a project: origin has an invalid remote; use --project.'
     );
   });
 
@@ -259,7 +318,10 @@ describe('project selection', () => {
       { name: 'invalid-metadata', gitRepo: 'not-a-remote' },
       { name: 'different', gitRepo: 'https://example.com/owner/other.git' },
     ];
-    const outcome = await selectProject({ cwd: repository, projects });
+    const outcome = await selectProject({
+      cwd: repository,
+      loadProjects: async () => projects,
+    });
 
     expect(outcome).toEqual({
       ok: false,
@@ -276,7 +338,7 @@ describe('project selection', () => {
     await setOrigin('git@example.com:Owner/Repo.git');
     const outcome = await selectProject({
       cwd: repository,
-      projects: [
+      loadProjects: async () => [
         { name: 'zulu', gitRepo: 'ssh://git@example.com/owner/repo' },
         { name: 'alpha', gitRepo: 'https://example.com/OWNER/REPO.git' },
       ],

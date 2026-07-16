@@ -71,18 +71,7 @@ export function createProgram({
 export async function selectProjectForCli(
   options: CliProjectSelectionOptions
 ): Promise<ProjectSelection> {
-  if (options.explicitProject !== undefined) {
-    return await selectProject({
-      cwd: options.cwd,
-      explicitProject: options.explicitProject,
-      projects: [],
-    });
-  }
-
-  return await selectProject({
-    cwd: options.cwd,
-    projects: await options.loadProjects(),
-  });
+  return await selectProject(options);
 }
 
 export async function run(argv: string[] = process.argv): Promise<void> {

@@ -1,4 +1,6 @@
 import { spawn } from 'node:child_process';
+import { isIP } from 'node:net';
+import { domainToASCII } from 'node:url';
 
 export type ProjectRepository = {
   name: string;
@@ -14,7 +16,8 @@ export type ProjectSelection =
       operation: 'inspect-worktree' | 'read-origin';
       detail: string;
     }
-  | { ok: false; reason: 'invalid-origin' | 'no-match'; origin: string }
+  | { ok: false; reason: 'invalid-origin' }
+  | { ok: false; reason: 'no-match'; origin: string }
   | {
       ok: false;
       reason: 'ambiguous';
@@ -25,7 +28,7 @@ export type ProjectSelection =
 export type SelectProjectOptions = {
   cwd: string;
   explicitProject?: string;
-  projects: readonly ProjectRepository[];
+  loadProjects: () => Promise<readonly ProjectRepository[]>;
 };
 
 const defaultPorts = new Map([
@@ -95,13 +98,12 @@ export async function selectProject(
         };
   }
 
-  const origin = originResult.stdout;
-  const normalizedOrigin = normalizeRemote(origin);
+  const normalizedOrigin = normalizeRemote(originResult.stdout);
   if (!normalizedOrigin) {
-    return { ok: false, reason: 'invalid-origin', origin };
+    return { ok: false, reason: 'invalid-origin' };
   }
 
-  const matches = options.projects
+  const matches = (await options.loadProjects())
     .filter(
       (project) =>
         project.gitRepo !== null &&
@@ -144,12 +146,32 @@ function parseUri(value: string): Location | undefined {
 }
 
 function normalizeLocation(location: Location): string | undefined {
-  const host = location.host.toLowerCase();
+  const host = normalizeHost(location.host);
   let path = location.path.replace(/^\/+|\/+$/gu, '').toLowerCase();
   path = path.replace(/\.git$/u, '');
   if (host === '' || path === '') return undefined;
 
   return `${host}${location.port ? `:${location.port}` : ''}/${path}`;
+}
+
+function normalizeHost(host: string): string {
+  if (host.startsWith('[') && host.endsWith(']')) {
+    const address = host.slice(1, -1);
+    return isIP(address) === 6
+      ? new URL(`http://${host}`).hostname.toLowerCase()
+      : '';
+  }
+
+  try {
+    const forbiddenHostCharacters = /[%/\\?#@:\[\]\s]/u;
+    const decodedHost = decodeURIComponent(host);
+    if (forbiddenHostCharacters.test(decodedHost)) return '';
+
+    const asciiHost = domainToASCII(decodedHost).toLowerCase();
+    return forbiddenHostCharacters.test(asciiHost) ? '' : asciiHost;
+  } catch {
+    return '';
+  }
 }
 
 type GitResult = { ok: true; stdout: string } | { ok: false; stderr: string };
