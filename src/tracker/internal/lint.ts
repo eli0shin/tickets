@@ -1,7 +1,7 @@
 import type { Dirent } from 'node:fs';
 import { lstat, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import { normalizeGitRemote } from '../../git.ts';
+import { normalizeRemote } from '../../git.ts';
 import type { DocumentDiagnostic } from './documents.ts';
 import { readTrackerDocument } from './documents.ts';
 import {
@@ -132,7 +132,7 @@ export async function lintProject(
       ) {
         selectedRepository =
           typeof repository === 'string'
-            ? normalizeGitRemote(repository)
+            ? (normalizeRemote(repository) ?? null)
             : null;
         if (selectedRepository === null) {
           violations.push({
@@ -222,6 +222,7 @@ export async function lintProject(
       });
     } else if (
       typeof parent === 'string' &&
+      parent !== '' &&
       referenceCount(parent, ticketsByReference) !== 1
     ) {
       violations.push({
@@ -421,7 +422,7 @@ async function projectsWithRepository(
       continue;
     }
     const value = document.value.metadata['Git-Repo'];
-    if (typeof value === 'string' && normalizeGitRemote(value) === repository)
+    if (typeof value === 'string' && normalizeRemote(value) === repository)
       names.push(project.name);
   }
   names.sort();

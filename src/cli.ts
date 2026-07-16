@@ -10,16 +10,27 @@ import {
   type ProjectRepository,
   type ProjectSelection,
 } from './git.ts';
-import { writeDiagnostic, writeLint, writeSuccess } from './output.ts';
+import {
+  formatProjectSelectionFailure,
+  writeDiagnostic,
+  writeLint,
+  writeSuccess,
+} from './output.ts';
+import { createTracker, type DocumentDiagnostic } from './tracker/index.ts';
 import {
   confirmOverwrite,
   installSkill,
   type ConfirmOverwrite,
 } from './skill.ts';
 
+type ProjectRepositoriesOutcome =
+  | { readonly ok: true; readonly value: readonly ProjectRepository[] }
+  | { readonly ok: false; readonly diagnostic: DocumentDiagnostic };
+
 type CliDependencies = {
   confirmOverwrite?: ConfirmOverwrite;
   interactive?: boolean;
+  cwd?: string;
 };
 
 type CliProjectSelectionOptions = {
@@ -31,6 +42,7 @@ type CliProjectSelectionOptions = {
 export function createProgram({
   confirmOverwrite: confirm = confirmOverwrite,
   interactive = Boolean(process.stdin.isTTY && process.stderr.isTTY),
+  cwd = process.cwd(),
 }: CliDependencies = {}): Command {
   const program = new Command()
     .exitOverride()
@@ -52,15 +64,31 @@ export function createProgram({
     .option('--json', 'emit JSON output')
     .action(async (options, command) => {
       const globals = command.optsWithGlobals();
-      const project = globals.project;
-      if (project === undefined) {
-        writeDiagnostic('Could not select a project; use --project');
-        process.exitCode = 2;
-        return;
-      }
       const workspace = resolve(
         globals.workspace ?? join(homedir(), '.local/state/tickets')
       );
+      let repositoryFailure: DocumentDiagnostic | undefined;
+      const selection = await selectProject({
+        cwd,
+        explicitProject: globals.project,
+        loadProjects: async () => {
+          const repositories = await loadProjectRepositories(workspace);
+          if (repositories.ok) return repositories.value;
+          repositoryFailure = repositories.diagnostic;
+          return [];
+        },
+      });
+      if (repositoryFailure !== undefined) {
+        writeDiagnostic(repositoryFailure.message);
+        process.exitCode = 2;
+        return;
+      }
+      if (!selection.ok) {
+        writeDiagnostic(formatProjectSelectionFailure(selection));
+        process.exitCode = 2;
+        return;
+      }
+      const project = selection.project;
       const result = await lintProject(workspace, project);
       if (!result.ok) {
         writeDiagnostic(result.diagnostic.message);
@@ -100,6 +128,32 @@ export async function selectProjectForCli(
   options: CliProjectSelectionOptions
 ): Promise<ProjectSelection> {
   return await selectProject(options);
+}
+
+async function loadProjectRepositories(
+  workspace: string
+): Promise<ProjectRepositoriesOutcome> {
+  const tracker = createTracker(workspace);
+  const projects = await tracker.discoverProjects();
+  const discoveryFailure = projects.diagnostics.at(0);
+  if (discoveryFailure !== undefined) {
+    return { ok: false, diagnostic: discoveryFailure };
+  }
+
+  const repositories: ProjectRepository[] = [];
+  for (const project of projects.entries) {
+    const document = await tracker.readProject(project.name);
+    if (!document.ok) continue;
+    const gitRepo = document.value.metadata['Git-Repo'];
+    if (
+      gitRepo === null ||
+      gitRepo === undefined ||
+      typeof gitRepo === 'string'
+    ) {
+      repositories.push({ name: project.name, gitRepo });
+    }
+  }
+  return { ok: true, value: repositories };
 }
 
 export async function run(argv: string[] = process.argv): Promise<void> {

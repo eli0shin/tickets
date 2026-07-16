@@ -186,6 +186,31 @@ test('lint covers every finding code and a clean JSON run through the CLI', asyn
     `${join(workspace, 'invalid-default', 'project.md')}\tinvalid-default-status\tDefault-Status must be one normalized status name\n`
   );
   expect(observedCodes.size).toBe(19);
+
+  const repository = join(temporaryDirectory, 'lint-repository');
+  await mkdir(repository);
+  expect(await run(['git', 'init'], { cwd: repository })).toMatchObject({
+    exitCode: 0,
+  });
+  expect(
+    await run(
+      ['git', 'remote', 'add', 'origin', 'git@example.com:clean/repo.git'],
+      { cwd: repository }
+    )
+  ).toMatchObject({ exitCode: 0 });
+  expect(
+    await run(
+      [
+        'bun',
+        resolve(repositoryRoot, 'src/cli.ts'),
+        '--workspace',
+        workspace,
+        'lint',
+      ],
+      { cwd: repository }
+    )
+  ).toEqual({ stdout: '', stderr: '', exitCode: 0 });
+
   expect(
     await run([
       'bun',
@@ -236,9 +261,21 @@ test('lint covers every finding code and a clean JSON run through the CLI', asyn
 }, 20_000);
 
 test('lint reports selection failures only on stderr with exit status 2', async () => {
-  expect(await run(['bun', 'src/cli.ts', 'lint'])).toEqual({
+  expect(
+    await run(
+      [
+        'bun',
+        resolve(repositoryRoot, 'src/cli.ts'),
+        '--workspace',
+        join(temporaryDirectory, 'missing-workspace'),
+        'lint',
+      ],
+      { cwd: temporaryDirectory }
+    )
+  ).toEqual({
     stdout: '',
-    stderr: 'Could not select a project; use --project\n',
+    stderr:
+      'Cannot discover a project: the current directory is not in a Git worktree; use --project.\n',
     exitCode: 2,
   });
 });

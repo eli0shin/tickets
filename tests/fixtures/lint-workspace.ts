@@ -32,6 +32,13 @@ export async function createLintWorkspace(
     '001-clean',
     '---\nAssigned-To:\nTags: [one]\nParent: external/001-shared\nBlocked-By: [001-clean, 001-clean]\n---\n'
   );
+  await ticket(
+    workspaceRoot,
+    'clean-project',
+    'todo',
+    '002-explicit-empty-parent',
+    '---\nParent: ""\n---\n'
+  );
   await writeFile(join(workspaceRoot, 'clean-project', '.ignored'), 'hidden');
 
   await mkdir(join(workspaceRoot, 'missing-metadata', 'todo'), {
