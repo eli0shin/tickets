@@ -29,10 +29,10 @@ jobs:
       - name: Check formatting
         id: format-check
         run: bun run format
-        continue-on-error: ${{ github.event_name == 'pull_request' }}
+        continue-on-error: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
 
       - name: Fix formatting and push
-        if: steps.format-check.outcome == 'failure' && github.event_name == 'pull_request'
+        if: steps.format-check.outcome == 'failure' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
         run: |
           bun run format:fix
           git add --update
