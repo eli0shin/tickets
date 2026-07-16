@@ -10,6 +10,7 @@ import {
   createTicket,
 } from './commands/create.ts';
 import { lintProject } from './commands/lint.ts';
+import { completeTicket, moveTicket, renameTicket } from './commands/mutate.ts';
 import { addReadOnlyCommands } from './commands/read.ts';
 import {
   selectProject,
@@ -23,8 +24,14 @@ import {
   writeLint,
   writeMutation,
   writeSuccess,
+  writeTicketMutation,
 } from './output.ts';
-import { createTracker, type DocumentDiagnostic } from './tracker/index.ts';
+import {
+  createTracker,
+  isNormalizedName,
+  isTicketReference,
+  type DocumentDiagnostic,
+} from './tracker/index.ts';
 import {
   confirmOverwrite,
   installSkill,
@@ -126,6 +133,84 @@ export function createProgram({
           parent: options.parent,
           blockedBy: options.blockedBy,
         })
+      );
+    });
+
+  program
+    .command('rename')
+    .description('rename a ticket and update workspace references')
+    .argument('<reference>', 'ticket reference')
+    .argument('<description>', 'normalized ticket description')
+    .action(async (reference, description) => {
+      if (!validMutationReference(reference)) return;
+      if (!isNormalizedName(description)) {
+        failMutation(`Invalid ticket description name: ${description}`);
+        return;
+      }
+      const selected = await mutationProject(
+        workspaceFrom(program.opts().workspace),
+        cwd,
+        program.opts().project,
+        reference
+      );
+      if (selected === null) return;
+      writeTicketMutation(
+        await renameTicket(
+          createTracker(selected.workspace),
+          selected.project,
+          reference,
+          description
+        )
+      );
+    });
+
+  program
+    .command('move')
+    .description('move a ticket to another status')
+    .argument('<reference>', 'ticket reference')
+    .argument('<status>', 'destination status')
+    .action(async (reference, statusName) => {
+      if (!validMutationReference(reference)) return;
+      if (!isNormalizedName(statusName)) {
+        failMutation(`Invalid status name: ${statusName}`);
+        return;
+      }
+      const selected = await mutationProject(
+        workspaceFrom(program.opts().workspace),
+        cwd,
+        program.opts().project,
+        reference
+      );
+      if (selected === null) return;
+      writeTicketMutation(
+        await moveTicket(
+          createTracker(selected.workspace),
+          selected.project,
+          reference,
+          statusName
+        )
+      );
+    });
+
+  program
+    .command('done')
+    .description('complete a ticket')
+    .argument('<reference>', 'ticket reference')
+    .action(async (reference) => {
+      if (!validMutationReference(reference)) return;
+      const selected = await mutationProject(
+        workspaceFrom(program.opts().workspace),
+        cwd,
+        program.opts().project,
+        reference
+      );
+      if (selected === null) return;
+      writeTicketMutation(
+        await completeTicket(
+          createTracker(selected.workspace),
+          selected.project,
+          reference
+        )
       );
     });
 
@@ -234,6 +319,31 @@ async function selectedProject(
     return null;
   }
   return selection.project;
+}
+
+async function mutationProject(
+  workspace: string,
+  cwd: string,
+  explicitProject: string | undefined,
+  reference: string
+): Promise<{ readonly workspace: string; readonly project: string } | null> {
+  const separator = reference.indexOf('/');
+  if (separator !== -1) {
+    return { workspace, project: reference.slice(0, separator) };
+  }
+  const project = await selectedProject(workspace, cwd, explicitProject);
+  return project === null ? null : { workspace, project };
+}
+
+function validMutationReference(reference: string): boolean {
+  if (isTicketReference(reference)) return true;
+  failMutation(`Invalid ticket reference: ${reference}`);
+  return false;
+}
+
+function failMutation(message: string): void {
+  writeDiagnostic(message);
+  process.exitCode = 2;
 }
 
 function trackerFor(workspace: string | undefined) {

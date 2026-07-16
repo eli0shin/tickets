@@ -16,22 +16,26 @@ const helpOutput = `Usage: tickets [options] [command]
 Manage tickets in a local filesystem tracker
 
 Options:
-  -v, --version                   output the version number
-  --workspace <path>              override the default ~/.local/state/tickets
-                                  workspace
-  --project <name>                select a project by name
-  -h, --help                      display help for command
+  -v, --version                     output the version number
+  --workspace <path>                override the default ~/.local/state/tickets
+                                    workspace
+  --project <name>                  select a project by name
+  -h, --help                        display help for command
 
 Commands:
-  project                         manage projects
-  status                          manage statuses
-  show <reference>                show a complete ticket document
-  list [options] <status>         list tickets in one status
-  search [options]                search tickets using structured criteria
-  create [options] <description>  create a ticket in the selected project
-  skill                           manage agent skills
-  lint [options]                  validate the selected project
-  help [command]                  display help for command
+  project                           manage projects
+  status                            manage statuses
+  show <reference>                  show a complete ticket document
+  list [options] <status>           list tickets in one status
+  search [options]                  search tickets using structured criteria
+  create [options] <description>    create a ticket in the selected project
+  rename <reference> <description>  rename a ticket and update workspace
+                                    references
+  move <reference> <status>         move a ticket to another status
+  done <reference>                  complete a ticket
+  skill                             manage agent skills
+  lint [options]                    validate the selected project
+  help [command]                    display help for command
 `;
 
 type ProcessResult = {
@@ -1000,5 +1004,166 @@ describe.each([
     });
     expect(await readFile(installedPath)).toEqual(await readFile(assetPath));
     expect(await readFile(unrelatedPath, 'utf8')).toBe('keep me');
+  });
+});
+
+describe('ticket mutation commands', () => {
+  test('renames cross-workspace references and shares idempotent completion between done and move', async () => {
+    const workspace = join(temporaryDirectory, 'mutation-cli-workspace');
+    const alphaTodo = join(workspace, 'alpha-project', 'todo');
+    const betaTodo = join(workspace, 'beta-project', 'todo');
+    await Promise.all([
+      mkdir(alphaTodo, { recursive: true }),
+      mkdir(betaTodo, { recursive: true }),
+    ]);
+    await writeFile(
+      join(alphaTodo, '001-original.md'),
+      '---\nAssigned-To: pi\nBlocked-By: [999-recorded]\n---\nTarget\r\n'
+    );
+    await writeFile(
+      join(betaTodo, '001-dependent.md'),
+      '---\nParent: alpha-project/001-original\nBlocked-By: [alpha-project/001-original]\n---\n'
+    );
+    const base = ['bun', 'src/cli.ts', '--workspace', workspace];
+    const renamedPath = join(alphaTodo, '001-renamed.md');
+
+    expect(
+      await run([
+        ...base,
+        '--project',
+        'alpha-project',
+        'rename',
+        '001-original',
+        'renamed',
+      ])
+    ).toEqual({ stdout: `${renamedPath}\n`, stderr: '', exitCode: 0 });
+    expect(await readFile(join(betaTodo, '001-dependent.md'), 'utf8')).toBe(
+      '---\nParent: alpha-project/001-renamed\nBlocked-By:\n  - alpha-project/001-renamed\n---\n'
+    );
+
+    const donePath = join(workspace, 'alpha-project', 'done', '001-renamed.md');
+    expect(await run([...base, 'done', 'alpha-project/001-renamed'])).toEqual({
+      stdout: `${donePath}\n`,
+      stderr: '',
+      exitCode: 0,
+    });
+    expect(await readFile(donePath, 'utf8')).toBe(
+      '---\nAssigned-To: pi\nBlocked-By: [999-recorded]\n---\nTarget\r\n'
+    );
+    expect(await readFile(join(betaTodo, '001-dependent.md'), 'utf8')).toBe(
+      '---\nParent: alpha-project/001-renamed\nBlocked-By: []\n---\n'
+    );
+
+    await writeFile(
+      join(betaTodo, '002-late.md'),
+      '---\nBlocked-By: [alpha-project/001-renamed]\n---\n'
+    );
+    expect(
+      await run([...base, 'move', 'alpha-project/001-renamed', 'done'])
+    ).toEqual({ stdout: `${donePath}\n`, stderr: '', exitCode: 0 });
+    expect(await readFile(join(betaTodo, '002-late.md'), 'utf8')).toBe(
+      '---\nBlocked-By: []\n---\n'
+    );
+
+    expect(
+      await run([...base, 'move', 'alpha-project/001-renamed', 'todo'])
+    ).toEqual({
+      stdout: `${join(alphaTodo, '001-renamed.md')}\n`,
+      stderr: '',
+      exitCode: 0,
+    });
+    expect(await readFile(join(betaTodo, '002-late.md'), 'utf8')).toBe(
+      '---\nBlocked-By: []\n---\n'
+    );
+  });
+
+  test('reports sorted cleanup failures with no stdout and keeps successful changes', async () => {
+    const workspace = join(temporaryDirectory, 'mutation-cli-partial');
+    const todo = join(workspace, 'alpha-project', 'todo');
+    await mkdir(todo, { recursive: true });
+    await writeFile(join(todo, '001-old.md'), '---\nBlocked-By: []\n---\n');
+    await writeFile(
+      join(todo, '002-updated.md'),
+      '---\nParent: 001-old\nBlocked-By: []\n---\n'
+    );
+    const malformed = join(todo, '003-malformed.md');
+    await writeFile(malformed, 'malformed\n');
+
+    expect(
+      await run([
+        'bun',
+        'src/cli.ts',
+        '--workspace',
+        workspace,
+        '--project',
+        'alpha-project',
+        'rename',
+        '001-old',
+        'new-name',
+      ])
+    ).toEqual({
+      stdout: '',
+      stderr: `${malformed}\tYAML front matter is missing or not delimited correctly\n`,
+      exitCode: 2,
+    });
+    expect(await Bun.file(join(todo, '001-new-name.md')).exists()).toBe(true);
+    expect(await readFile(join(todo, '002-updated.md'), 'utf8')).toBe(
+      '---\nParent: 001-new-name\nBlocked-By: []\n---\n'
+    );
+  });
+
+  test('reports completion cleanup failures after preserving visible partial changes', async () => {
+    const workspace = join(temporaryDirectory, 'completion-cli-partial');
+    const todo = join(workspace, 'alpha-project', 'todo');
+    await mkdir(todo, { recursive: true });
+    const source = '---\nAssigned-To: pi\nBlocked-By: []\n---\nExact\r\n';
+    await writeFile(join(todo, '001-finish.md'), source);
+    await writeFile(
+      join(todo, '002-dependent.md'),
+      '---\nBlocked-By: [001-finish]\n---\n'
+    );
+    const malformed = join(todo, '003-malformed.md');
+    await writeFile(malformed, 'malformed\n');
+
+    expect(
+      await run([
+        'bun',
+        'src/cli.ts',
+        '--workspace',
+        workspace,
+        '--project',
+        'alpha-project',
+        'done',
+        '001-finish',
+      ])
+    ).toEqual({
+      stdout: '',
+      stderr: `${malformed}\tYAML front matter is missing or not delimited correctly\n`,
+      exitCode: 2,
+    });
+    expect(
+      await readFile(
+        join(workspace, 'alpha-project', 'done', '001-finish.md'),
+        'utf8'
+      )
+    ).toBe(source);
+    expect(await readFile(join(todo, '002-dependent.md'), 'utf8')).toBe(
+      '---\nBlocked-By: []\n---\n'
+    );
+  });
+
+  test('rejects invalid mutation arguments with deterministic CLI failures', async () => {
+    expect(await run(['bun', 'src/cli.ts', 'done', 'BAD'])).toEqual({
+      stdout: '',
+      stderr: 'Invalid ticket reference: BAD\n',
+      exitCode: 2,
+    });
+    expect(
+      await run(['bun', 'src/cli.ts', 'rename', '001-valid', 'Not-valid'])
+    ).toEqual({
+      stdout: '',
+      stderr: 'Invalid ticket description name: Not-valid\n',
+      exitCode: 2,
+    });
   });
 });
