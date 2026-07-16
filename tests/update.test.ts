@@ -35,6 +35,15 @@ function mockFetch(response: Response): typeof fetch {
   );
 }
 
+function rejectedFetch(error: unknown): typeof fetch {
+  return Object.assign(
+    mock(() => Promise.reject(error)),
+    {
+      preconnect: originalFetch.preconnect,
+    }
+  );
+}
+
 async function temporaryDirectory(): Promise<string> {
   const path = await mkdtemp(join(tmpdir(), 'tickets-update-'));
   temporaryDirectories.push(path);
@@ -118,6 +127,25 @@ describe('release and download diagnostics', () => {
         error: expected,
       });
     }
+  });
+
+  test('returns structured diagnostics for network failures', async () => {
+    globalThis.fetch = rejectedFetch(new Error('offline'));
+    expect(await fetchLatestVersion()).toEqual({
+      success: false,
+      error: 'GitHub API request failed: offline',
+    });
+
+    globalThis.fetch = rejectedFetch(new Error('connection reset'));
+    expect(
+      await downloadBinary(
+        'https://example.invalid/tickets',
+        await temporaryDirectory()
+      )
+    ).toEqual({
+      success: false,
+      error: 'Download failed: connection reset',
+    });
   });
 
   test('preserves missing-artifact and download diagnostics', async () => {

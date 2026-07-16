@@ -65,12 +65,19 @@ export async function fetchLatestVersion(): Promise<
   const binaryName = getBinaryName(platformResult.data, archResult.data);
   const apiUrl = `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`;
 
-  const response = await fetch(apiUrl, {
+  const responseResult = await fetchResponse(apiUrl, {
     headers: {
       Accept: 'application/vnd.github.v3+json',
       'User-Agent': 'tickets-cli',
     },
   });
+  if (!responseResult.success) {
+    return {
+      success: false,
+      error: `GitHub API request failed: ${responseResult.error}`,
+    };
+  }
+  const response = responseResult.data;
 
   if (!response.ok) {
     if (response.status === 404) {
@@ -93,7 +100,14 @@ export async function downloadBinary(
   url: string,
   targetDir: string
 ): Promise<OperationResult<string>> {
-  const response = await fetch(url);
+  const responseResult = await fetchResponse(url);
+  if (!responseResult.success) {
+    return {
+      success: false,
+      error: `Download failed: ${responseResult.error}`,
+    };
+  }
+  const response = responseResult.data;
 
   if (!response.ok) {
     if (response.status === 404) {
@@ -108,6 +122,21 @@ export async function downloadBinary(
   await chmod(tempPath, 0o755);
 
   return { success: true, data: tempPath };
+}
+
+async function fetchResponse(
+  input: string,
+  init?: RequestInit
+): Promise<OperationResult<Response>> {
+  try {
+    return { success: true, data: await fetch(input, init) };
+  } catch (error) {
+    return { success: false, error: errorMessage(error) };
+  }
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : 'Unknown error';
 }
 
 export async function replaceBinary(
