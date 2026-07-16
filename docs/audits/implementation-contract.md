@@ -6,6 +6,18 @@ Audited 2026-07-16 at `b723fca` against accepted ADRs 0001–0007 and the accept
 
 **Not ready for a first release.** The implemented product is broad and its clean quality, test, native-package, release-workflow, and installer checks pass, but five public-contract gaps block release. Each gap has a scoped child tracker ticket, and audit ticket 023 is blocked by all five. No implementation change is part of this audit.
 
+## Blocking remediation
+
+The canonical tickets are local filesystem-tracker records under `~/.local/state/tickets/tickets/todo/`, intentionally outside this Git repository per the product's storage contract. Audit ticket `023-audit-the-implementation-contract` is in `in-progress` and names all five in `Blocked-By`. This durable summary makes their scope reviewable with the audit report; assignment and resolution remain tracker operations.
+
+| Child ticket                                  | Required remediation                                                                                                                                                                                                                       |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `024-remove-hidden-ticket-creation-locking`   | Remove `.ticket-creation-lock`, stale-lock recovery, retries, and the lock-only dependency. Preserve allocation from discovered IDs and create-only no-overwrite publication without adding a simultaneous-mutation guarantee.             |
+| `025-align-symlink-handling-with-contract`    | Remove symbolic-link identity branches and dedicated symlink-policy tests. Leave behavior to ordinary filesystem calls without a lint rule or special safety guarantee.                                                                    |
+| `026-preserve-supported-yaml-metadata-values` | Stop classifying valid standard tagged values in unknown fields as malformed. Preserve them semantically or leave an unrewritable document untouched; retain malformed/duplicate diagnostics and cover all parser-supported standard tags. |
+| `027-render-unexpected-cli-failures`          | Let unexpected command failures reach the entry point, then emit one stderr line through `output.ts`, no stdout, and exit 2, with complete integration coverage.                                                                           |
+| `028-restore-standard-version-option`         | Restore Commander's standard `-V, --version` interface, remove uncontracted `-v`, and assert source/native version and help output.                                                                                                        |
+
 Status meanings: **Pass** means implementation plus public-boundary evidence matches the branch; **Gap** names its blocking remediation ticket.
 
 ## Contract matrix
