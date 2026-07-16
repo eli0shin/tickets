@@ -1,6 +1,5 @@
 #!/usr/bin/env bun
 import { Command } from '@commander-js/extra-typings';
-import { CommanderError } from 'commander';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { version } from '../package.json';
@@ -45,6 +44,7 @@ import {
   writeStdout,
   writeTicketMutation,
   writeTicketQueryResult,
+  writeUnexpectedFailure,
 } from './output.ts';
 import {
   createTracker,
@@ -67,8 +67,20 @@ type ProjectRepositoriesOutcome =
   | { readonly ok: true; readonly value: readonly ProjectRepository[] }
   | { readonly ok: false; readonly diagnostic: DocumentDiagnostic };
 
+const commanderExitMarker = Symbol('expected Commander exit');
+
+type ExpectedCommanderExit = {
+  readonly [commanderExitMarker]: true;
+  readonly exitCode: number;
+};
+
+type SelectProjectForCli = (
+  options: SelectProjectOptions
+) => Promise<ProjectSelection>;
+
 type CliDependencies = {
   confirmOverwrite?: ConfirmOverwrite;
+  selectProject?: SelectProjectForCli;
   interactive?: boolean;
   cwd?: string;
 };
@@ -77,12 +89,13 @@ type SearchOptions = SearchInput & { readonly json?: boolean };
 
 export function createProgram({
   confirmOverwrite: confirm = confirmOverwrite,
+  selectProject: select = selectProjectForCli,
   interactive = Boolean(process.stdin.isTTY && process.stderr.isTTY),
   cwd = process.cwd(),
 }: CliDependencies = {}): RootCommand {
   const program = new Command()
     .configureOutput({ writeOut: writeStdout, writeErr: writeStderr })
-    .exitOverride()
+    .exitOverride((error) => commanderExit(error.exitCode))
     .showSuggestionAfterError(false)
     .name('tickets')
     .description('Manage tickets in a local filesystem tracker')
@@ -125,7 +138,7 @@ export function createProgram({
     .description('list statuses')
     .option('--json', 'emit JSON output')
     .action(async ({ json }) => {
-      const selected = await selectedTracker(program, cwd, true);
+      const selected = await selectedTracker(program, cwd, select, true);
       if (!selected.ok) return writeCommandFailure(selected.failure);
       writeCommandOutcome(
         await listStatuses(selected.value.tracker, selected.value.project),
@@ -139,7 +152,7 @@ export function createProgram({
     .description('create a status in the selected project')
     .argument('<name>', 'normalized status name')
     .action(async (name) => {
-      const selected = await selectedTracker(program, cwd);
+      const selected = await selectedTracker(program, cwd, select);
       if (!selected.ok) return writeCommandFailure(selected.failure);
       writeMutation(
         await createStatus(selected.value.tracker, selected.value.project, name)
@@ -156,7 +169,7 @@ export function createProgram({
       const separator = reference.indexOf('/');
       const selected =
         separator === -1
-          ? await selectedTracker(program, cwd, true)
+          ? await selectedTracker(program, cwd, select, true)
           : successfulSelection(
               trackerFor(program.opts().workspace),
               reference.slice(0, separator)
@@ -180,7 +193,7 @@ export function createProgram({
     .action(async (statusName, { json }) => {
       const validation = validateStatus(statusName);
       if (!validation.ok) return writeCommandFailure(validation.failure);
-      const selected = await selectedTracker(program, cwd, true);
+      const selected = await selectedTracker(program, cwd, select, true);
       if (!selected.ok) return writeCommandFailure(selected.failure);
       writeCommandOutcome(
         await listTickets(
@@ -213,7 +226,7 @@ export function createProgram({
     .action(async (options: SearchOptions) => {
       const validation = validateSearchInput(options);
       if (!validation.ok) return writeCommandFailure(validation.failure);
-      const selected = await selectedTracker(program, cwd, true);
+      const selected = await selectedTracker(program, cwd, select, true);
       if (!selected.ok) return writeCommandFailure(selected.failure);
       writeCommandOutcome(
         await searchTickets(
@@ -237,7 +250,7 @@ export function createProgram({
     .option('--parent <reference>', 'parent ticket reference')
     .option('--blocked-by <reference...>', 'one or more blocking references')
     .action(async (description, options) => {
-      const selected = await selectedTracker(program, cwd);
+      const selected = await selectedTracker(program, cwd, select);
       if (!selected.ok) return writeCommandFailure(selected.failure);
       writeMutation(
         await createTicket(selected.value.tracker, selected.value.project, {
@@ -264,7 +277,7 @@ export function createProgram({
           message: `Invalid ticket description name: ${description}`,
         });
       }
-      const selected = await mutationTracker(program, cwd, reference);
+      const selected = await mutationTracker(program, cwd, select, reference);
       if (!selected.ok) return writeCommandFailure(selected.failure);
       writeTicketMutation(
         await renameTicket(
@@ -289,7 +302,7 @@ export function createProgram({
           message: `Invalid status name: ${statusName}`,
         });
       }
-      const selected = await mutationTracker(program, cwd, reference);
+      const selected = await mutationTracker(program, cwd, select, reference);
       if (!selected.ok) return writeCommandFailure(selected.failure);
       writeTicketMutation(
         await moveTicket(
@@ -307,7 +320,7 @@ export function createProgram({
     .argument('<reference>', 'ticket reference')
     .action(async (reference) => {
       if (!validMutationReference(reference)) return;
-      const selected = await mutationTracker(program, cwd, reference);
+      const selected = await mutationTracker(program, cwd, select, reference);
       if (!selected.ok) return writeCommandFailure(selected.failure);
       writeTicketMutation(
         await completeTicket(
@@ -338,7 +351,7 @@ export function createProgram({
     .description('validate the selected project')
     .option('--json', 'emit JSON output')
     .action(async ({ json }) => {
-      const selected = await selectedTracker(program, cwd);
+      const selected = await selectedTracker(program, cwd, select);
       if (!selected.ok) return writeCommandFailure(selected.failure);
       writeLintOutcome(
         selected.value.project,
@@ -360,6 +373,7 @@ export async function selectProjectForCli(
 async function selectedTracker(
   program: RootCommand,
   cwd: string,
+  select: SelectProjectForCli,
   validateExplicit = false
 ): Promise<
   CommandOutcome<{ readonly tracker: Tracker; readonly project: string }>
@@ -370,17 +384,18 @@ async function selectedTracker(
     const validation = validateProject(globals.project);
     if (!validation.ok) return validation;
   }
-  const selected = await selectedProject(tracker, cwd, globals.project);
+  const selected = await selectedProject(tracker, cwd, globals.project, select);
   return selected.ok ? successfulSelection(tracker, selected.value) : selected;
 }
 
 async function selectedProject(
   tracker: Tracker,
   cwd: string,
-  explicitProject: string | undefined
+  explicitProject: string | undefined,
+  select: SelectProjectForCli
 ): Promise<CommandOutcome<string>> {
   let repositoryFailure: DocumentDiagnostic | undefined;
-  const selection = await selectProject({
+  const selection = await select({
     cwd,
     explicitProject,
     loadProjects: async () => {
@@ -432,6 +447,7 @@ async function loadProjectRepositories(
 async function mutationTracker(
   program: RootCommand,
   cwd: string,
+  select: SelectProjectForCli,
   reference: string
 ): Promise<
   CommandOutcome<{ readonly tracker: Tracker; readonly project: string }>
@@ -441,7 +457,7 @@ async function mutationTracker(
   if (separator !== -1) {
     return successfulSelection(tracker, reference.slice(0, separator));
   }
-  return selectedTracker(program, cwd);
+  return selectedTracker(program, cwd, select);
 }
 
 function successfulSelection(
@@ -470,13 +486,34 @@ function collect(value: string, previous: string[]): string[] {
   return [...previous, value];
 }
 
-export async function run(argv: string[] = process.argv): Promise<void> {
+export async function run(
+  argv: string[] = process.argv,
+  dependencies: CliDependencies = {}
+): Promise<void> {
   try {
-    await createProgram().parseAsync(argv);
+    await createProgram(dependencies).parseAsync(argv);
   } catch (error) {
-    if (!(error instanceof CommanderError)) throw error;
-    assignUsageExitCode(error.exitCode);
+    if (isExpectedCommanderExit(error)) {
+      assignUsageExitCode(error.exitCode);
+      return;
+    }
+    writeUnexpectedFailure(error);
   }
+}
+
+function commanderExit(exitCode: number): never {
+  throw {
+    [commanderExitMarker]: true,
+    exitCode,
+  } satisfies ExpectedCommanderExit;
+}
+
+function isExpectedCommanderExit(
+  error: unknown
+): error is ExpectedCommanderExit {
+  return (
+    typeof error === 'object' && error !== null && commanderExitMarker in error
+  );
 }
 
 if (import.meta.main) {

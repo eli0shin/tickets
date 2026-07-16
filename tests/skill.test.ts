@@ -159,6 +159,24 @@ describe('skill installation', () => {
     expect(await readFile(installedPath, 'utf8')).toBe('keep me');
   });
 
+  test('lets rejected confirmation escape as an unexpected failure', async () => {
+    const target = await temporaryTarget();
+    const installedPath = join(target, 'SKILL.md');
+    await mkdir(target, { recursive: true });
+    await writeFile(installedPath, 'keep me');
+
+    await expect(
+      installSkill({
+        target,
+        interactive: true,
+        confirmOverwrite: async () => {
+          throw new Error('confirmation unavailable');
+        },
+      })
+    ).rejects.toThrow('confirmation unavailable');
+    expect(await readFile(installedPath, 'utf8')).toBe('keep me');
+  });
+
   test('fails non-interactively when the skill already exists', async () => {
     const target = await temporaryTarget();
     const installedPath = join(target, 'SKILL.md');
