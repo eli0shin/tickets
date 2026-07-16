@@ -27,7 +27,7 @@ Run `tickets --help` for the complete command grammar.
 
 `tickets update` prints the current version, checks the latest GitHub release, and replaces the running executable when a newer release is available. It supports Linux and macOS on x64 and arm64.
 
-Tickets also checks for updates in a detached background worker. By default it silently installs an available stable release at most once every 24 hours. Configure this in `~/.config/tickets/config.json` (or `$XDG_CONFIG_HOME/tickets/config.json`):
+Tickets also checks for updates in a detached background worker. By default it silently installs an available stable release. Under ordinary operation, each completed check starts a 24-hour cooldown before the next check. Configure this in `~/.config/tickets/config.json` (or `$XDG_CONFIG_HOME/tickets/config.json`):
 
 ```json
 {
