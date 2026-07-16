@@ -16,7 +16,7 @@ const helpOutput = `Usage: tickets [options] [command]
 Manage tickets in a local filesystem tracker
 
 Options:
-  -v, --version                     output the version number
+  -V, --version                     output the version number
   --workspace <path>                override the default ~/.local/state/tickets
                                     workspace
   --project <name>                  select a project by name
@@ -145,11 +145,21 @@ describe.each([
     });
   }, 15_000);
 
-  test('--version prints the package version', async () => {
-    expect(await run([...getCommand(), '--version'])).toEqual({
-      stdout: `${version}\n`,
-      stderr: '',
-      exitCode: 0,
+  test('standard version options print only the package version', async () => {
+    for (const option of ['-V', '--version']) {
+      expect(await run([...getCommand(), option])).toEqual({
+        stdout: `${version}\n`,
+        stderr: '',
+        exitCode: 0,
+      });
+    }
+  });
+
+  test('-v is not a version option', async () => {
+    expect(await run([...getCommand(), '-v'])).toEqual({
+      stdout: '',
+      stderr: "error: unknown option '-v'\n",
+      exitCode: 2,
     });
   });
 
