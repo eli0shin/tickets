@@ -269,7 +269,10 @@ export function createProgram({
   program
     .command('create')
     .description('create a ticket in the selected project')
-    .argument('<description>', 'normalized ticket description')
+    .argument(
+      '<description>',
+      'human-readable text; normalized to lowercase kebab-case'
+    )
     .option('--status <status>', 'status for the new ticket')
     .option('--assign <assignee>', 'assignee for the new ticket')
     .option('--tag <tag...>', 'one or more tags')
@@ -294,15 +297,12 @@ export function createProgram({
     .command('rename')
     .description('rename a ticket and update workspace references')
     .argument('<reference>', 'ticket reference')
-    .argument('<description>', 'normalized ticket description')
+    .argument(
+      '<description>',
+      'human-readable text; normalized to lowercase kebab-case'
+    )
     .action(async (reference, description) => {
       if (!validMutationReference(reference)) return;
-      if (!isNormalizedName(description)) {
-        return writeCommandFailure({
-          kind: 'message',
-          message: `Invalid ticket description name: ${description}`,
-        });
-      }
       const selected = await mutationTracker(program, cwd, select, reference);
       if (!selected.ok) return writeCommandFailure(selected.failure);
       writeTicketMutation(

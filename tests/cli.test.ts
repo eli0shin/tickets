@@ -415,6 +415,119 @@ Options:
     });
   }, 15_000);
 
+  test('creates a ticket from the exact reported human description command', async () => {
+    const fixtureName = _name.toLowerCase().replaceAll(' ', '-');
+    const home = join(
+      temporaryDirectory,
+      `${fixtureName}-human-description-home`
+    );
+    const workspace = join(home, '.local', 'state', 'tickets');
+    const projectPath = join(workspace, 'human-description-project');
+    const repository = join(
+      temporaryDirectory,
+      `${fixtureName}-human-description-repository`
+    );
+    await Promise.all([
+      mkdir(join(projectPath, 'todo'), { recursive: true }),
+      mkdir(join(projectPath, 'in-progress'), { recursive: true }),
+      mkdir(join(projectPath, 'done'), { recursive: true }),
+      mkdir(repository),
+    ]);
+    await writeFile(
+      join(projectPath, 'project.md'),
+      '---\nDefault-Status: todo\nGit-Repo: https://example.com/owner/human-description.git\n---\n'
+    );
+    await git(repository, ['init']);
+    await git(repository, [
+      'remote',
+      'add',
+      'origin',
+      'git@example.com:owner/human-description.git',
+    ]);
+    const command = getCommand().map((argument, index) =>
+      index === 1 && argument === 'src/cli.ts'
+        ? resolve(repositoryRoot, argument)
+        : argument
+    );
+    const createdPath = join(
+      projectPath,
+      'todo',
+      '001-fix-incorrect-assigned-to-error.md'
+    );
+
+    expect(
+      await run([...command, 'create', 'fix incorrect Assigned-To error'], {
+        cwd: repository,
+        env: { HOME: home },
+      })
+    ).toEqual({ stdout: `${createdPath}\n`, stderr: '', exitCode: 0 });
+    expect(await Bun.file(createdPath).exists()).toBe(true);
+  });
+
+  test('normalizes rename input and rejects normalized collisions and empty descriptions', async () => {
+    const fixtureName = _name.toLowerCase().replaceAll(' ', '-');
+    const workspace = join(
+      temporaryDirectory,
+      `${fixtureName}-description-boundaries`
+    );
+    const projectPath = join(workspace, 'alpha-project');
+    const todo = join(projectPath, 'todo');
+    const done = join(projectPath, 'done');
+    await Promise.all([
+      mkdir(todo, { recursive: true }),
+      mkdir(join(projectPath, 'in-progress'), { recursive: true }),
+      mkdir(done, { recursive: true }),
+    ]);
+    await writeFile(
+      join(projectPath, 'project.md'),
+      '---\nDefault-Status: todo\nGit-Repo:\n---\n'
+    );
+    const sourcePath = join(todo, '001-original.md');
+    const renameCollisionPath = join(done, '001-normalized-name.md');
+    const createCollisionPath = join(todo, '002-normalized-name.md');
+    await writeFile(sourcePath, ticketSource);
+    await writeFile(renameCollisionPath, ticketSource);
+    await mkdir(createCollisionPath);
+    const command = [
+      ...getCommand(),
+      '--workspace',
+      workspace,
+      '--project',
+      'alpha-project',
+    ];
+
+    expect(await run([...command, 'create', ' Normalized NAME!!! '])).toEqual({
+      stdout: '',
+      stderr: `Resource already exists: ${createCollisionPath}\n`,
+      exitCode: 2,
+    });
+    expect(
+      await run([...command, 'rename', '001-original', ' Normalized NAME!!! '])
+    ).toEqual({
+      stdout: '',
+      stderr: `Resource already exists: ${renameCollisionPath}\n`,
+      exitCode: 2,
+    });
+    const renamedPath = join(todo, '001-cafe-deja-vu.md');
+    expect(
+      await run([...command, 'rename', '001-original', 'Café déjà vu'])
+    ).toEqual({ stdout: `${renamedPath}\n`, stderr: '', exitCode: 0 });
+    for (const arguments_ of [
+      ['create', '!!! 中文 😀'],
+      ['rename', '001-cafe-deja-vu', '!!! 中文 😀'],
+    ]) {
+      expect(await run([...command, ...arguments_])).toEqual({
+        stdout: '',
+        stderr: 'Invalid ticket description name: !!! 中文 😀\n',
+        exitCode: 2,
+      });
+    }
+    expect(await Bun.file(sourcePath).exists()).toBe(false);
+    expect(await readFile(renamedPath, 'utf8')).toBe(ticketSource);
+    expect(await readFile(renameCollisionPath, 'utf8')).toBe(ticketSource);
+    expect(await readdir(createCollisionPath)).toEqual([]);
+  });
+
   test('standard version options print only the package version', async () => {
     for (const option of ['-V', '--version']) {
       expect(await run([...getCommand(), option])).toEqual({
@@ -1635,13 +1748,6 @@ describe('ticket mutation commands', () => {
     expect(await run(['bun', 'src/cli.ts', 'done', 'BAD'])).toEqual({
       stdout: '',
       stderr: 'Invalid ticket reference: BAD\n',
-      exitCode: 2,
-    });
-    expect(
-      await run(['bun', 'src/cli.ts', 'rename', '001-valid', 'Not-valid'])
-    ).toEqual({
-      stdout: '',
-      stderr: 'Invalid ticket description name: Not-valid\n',
       exitCode: 2,
     });
   });
