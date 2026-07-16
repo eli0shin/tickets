@@ -464,7 +464,7 @@ Options:
     expect(await Bun.file(createdPath).exists()).toBe(true);
   });
 
-  test('normalizes rename input and rejects normalized collisions and empty descriptions', async () => {
+  test('normalizes rename input and rejects collisions, empty descriptions, and punctuation-only descriptions', async () => {
     const fixtureName = _name.toLowerCase().replaceAll(' ', '-');
     const workspace = join(
       temporaryDirectory,
@@ -512,20 +512,29 @@ Options:
     expect(
       await run([...command, 'rename', '001-original', 'Café déjà vu'])
     ).toEqual({ stdout: `${renamedPath}\n`, stderr: '', exitCode: 0 });
-    for (const arguments_ of [
-      ['create', '!!! 中文 😀'],
-      ['rename', '001-cafe-deja-vu', '!!! 中文 😀'],
-    ]) {
-      expect(await run([...command, ...arguments_])).toEqual({
-        stdout: '',
-        stderr: 'Invalid ticket description name: !!! 中文 😀\n',
-        exitCode: 2,
-      });
+    const dependentPath = join(todo, '003-dependent.md');
+    const dependentSource =
+      '---\nParent: 001-cafe-deja-vu\nBlocked-By: [001-cafe-deja-vu]\n---\n';
+    await writeFile(dependentPath, dependentSource);
+    const expectedTodoEntries = (await readdir(todo)).toSorted();
+    for (const description of ['', '!!!']) {
+      for (const arguments_ of [
+        ['create', description],
+        ['rename', '001-cafe-deja-vu', description],
+      ]) {
+        expect(await run([...command, ...arguments_])).toEqual({
+          stdout: '',
+          stderr: `Invalid ticket description name: ${description}\n`,
+          exitCode: 2,
+        });
+      }
+      expect((await readdir(todo)).toSorted()).toEqual(expectedTodoEntries);
+      expect(await readFile(renamedPath, 'utf8')).toBe(ticketSource);
+      expect(await readFile(dependentPath, 'utf8')).toBe(dependentSource);
+      expect(await readFile(renameCollisionPath, 'utf8')).toBe(ticketSource);
+      expect(await readdir(createCollisionPath)).toEqual([]);
     }
     expect(await Bun.file(sourcePath).exists()).toBe(false);
-    expect(await readFile(renamedPath, 'utf8')).toBe(ticketSource);
-    expect(await readFile(renameCollisionPath, 'utf8')).toBe(ticketSource);
-    expect(await readdir(createCollisionPath)).toEqual([]);
   });
 
   test('standard version options print only the package version', async () => {
