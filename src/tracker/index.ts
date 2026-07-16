@@ -41,6 +41,12 @@ import {
   type SearchCriteria,
   type TicketSummary,
 } from './internal/queries.ts';
+import {
+  completeTicket,
+  moveTicket,
+  renameTicket,
+  type MutationOutcome,
+} from './internal/mutations.ts';
 
 export type {
   Discovery,
@@ -59,6 +65,7 @@ export type {
   QueryResult,
   SearchCriteria,
   TicketSummary,
+  MutationOutcome,
 };
 
 export { isNormalizedName, isTicketReference, parseTicketName };
@@ -103,6 +110,20 @@ export type Tracker = {
     projectName: string,
     criteria?: SearchCriteria
   ): Promise<QueryResult>;
+  renameTicket(
+    projectName: string,
+    reference: string,
+    description: string
+  ): Promise<MutationOutcome>;
+  moveTicket(
+    projectName: string,
+    reference: string,
+    statusName: string
+  ): Promise<MutationOutcome>;
+  completeTicket(
+    projectName: string,
+    reference: string
+  ): Promise<MutationOutcome>;
 };
 
 export function createTracker(workspaceRoot: string): Tracker {
@@ -317,6 +338,12 @@ export function createTracker(workspaceRoot: string): Tracker {
         criteria
       );
     },
+    renameTicket: (projectName, reference, description) =>
+      renameTicket(absoluteRoot, projectName, reference, description),
+    moveTicket: (projectName, reference, statusName) =>
+      moveTicket(absoluteRoot, projectName, reference, statusName),
+    completeTicket: (projectName, reference) =>
+      completeTicket(absoluteRoot, projectName, reference),
   };
 }
 

@@ -5,6 +5,7 @@ import type {
   Project,
   QueryResult,
   Status,
+  MutationOutcome,
 } from './tracker/index.ts';
 
 type NamedResource = Pick<Project | Status, 'name' | 'path'>;
@@ -147,5 +148,20 @@ export function writeMutation(
   }
 
   writeDiagnostic(outcome.diagnostic.message);
+  process.exitCode = 2;
+}
+
+export function writeTicketMutation(outcome: MutationOutcome): void {
+  if (outcome.ok) {
+    writeSuccess(outcome.value.path);
+    return;
+  }
+  if (outcome.partial) {
+    writeDiagnostics(outcome.diagnostics);
+  } else {
+    for (const diagnostic of outcome.diagnostics) {
+      writeDiagnostic(diagnostic.message);
+    }
+  }
   process.exitCode = 2;
 }

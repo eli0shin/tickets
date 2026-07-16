@@ -1345,3 +1345,367 @@ describe('tracker document parsing and canonical writing', () => {
     expect(writeOutcome.diagnostic.path).toBe(join(projectPath, 'project.md'));
   });
 });
+
+describe('tracker ticket mutations', () => {
+  test('renames with the original ID and rewrites local and cross-project relationships', async () => {
+    const workspaceRoot = await temporaryWorkspace();
+    const alphaTodo = join(workspaceRoot, 'alpha-project', 'todo');
+    const betaTodo = join(workspaceRoot, 'beta-project', 'todo');
+    await Promise.all([
+      mkdir(alphaTodo, { recursive: true }),
+      mkdir(betaTodo, { recursive: true }),
+    ]);
+    const targetSource =
+      '---\nAssigned-To: pi\nTags: []\nParent:\nBlocked-By: []\n---\nTarget\n';
+    await writeFile(join(alphaTodo, '001-old-name.md'), targetSource);
+    await writeFile(
+      join(alphaTodo, '002-local-child.md'),
+      '---\nParent: 001-old-name\nBlocked-By: [001-old-name, alpha-project/001-old-name]\nUnknown: retained\n---\nLocal\n'
+    );
+    await writeFile(
+      join(betaTodo, '001-cross-child.md'),
+      '---\nParent: alpha-project/001-old-name\nBlocked-By: [alpha-project/001-old-name]\n---\nCross\n'
+    );
+
+    const tracker = createTracker(workspaceRoot);
+    const renamedPath = join(alphaTodo, '001-new-name.md');
+    expect(
+      await tracker.renameTicket('alpha-project', '001-old-name', 'new-name')
+    ).toEqual({
+      ok: true,
+      value: {
+        id: 1n,
+        name: '001-new-name',
+        description: 'new-name',
+        path: renamedPath,
+        status: {
+          name: 'todo',
+          path: alphaTodo,
+          project: {
+            name: 'alpha-project',
+            path: join(workspaceRoot, 'alpha-project'),
+          },
+        },
+      },
+    });
+    expect(await Bun.file(join(alphaTodo, '001-old-name.md')).exists()).toBe(
+      false
+    );
+    expect(await readFile(renamedPath, 'utf8')).toBe(targetSource);
+
+    const local = await tracker.readTicket(
+      'alpha-project',
+      'todo',
+      '002-local-child'
+    );
+    expect(local.ok).toBe(true);
+    if (!local.ok) throw new Error(local.diagnostic.message);
+    expect(local.value).toEqual({
+      metadata: {
+        Parent: '001-new-name',
+        'Blocked-By': ['001-new-name', 'alpha-project/001-new-name'],
+        Unknown: 'retained',
+      },
+      body: 'Local\n',
+    });
+    const cross = await tracker.readTicket(
+      'beta-project',
+      'todo',
+      '001-cross-child'
+    );
+    expect(cross.ok).toBe(true);
+    if (!cross.ok) throw new Error(cross.diagnostic.message);
+    expect(cross.value.metadata).toEqual({
+      Parent: 'alpha-project/001-new-name',
+      'Blocked-By': ['alpha-project/001-new-name'],
+    });
+  });
+
+  test('moves are no-ops in place, reject collisions, and move successfully', async () => {
+    const workspaceRoot = await temporaryWorkspace();
+    const projectPath = join(workspaceRoot, 'alpha-project');
+    const todo = join(projectPath, 'todo');
+    const active = join(projectPath, 'in-progress');
+    await Promise.all([
+      mkdir(todo, { recursive: true }),
+      mkdir(active, { recursive: true }),
+    ]);
+    const source = '---\nBlocked-By: []\n---\nBytes stay exact\r\n';
+    await writeFile(join(todo, '001-move-me.md'), source);
+    const tracker = createTracker(workspaceRoot);
+
+    const noOp = await tracker.moveTicket(
+      'alpha-project',
+      '001-move-me',
+      'todo'
+    );
+    expect(noOp.ok).toBe(true);
+    expect(await readFile(join(todo, '001-move-me.md'), 'utf8')).toBe(source);
+    await mkdir(join(active, '001-move-me.md'));
+    const collision = await tracker.moveTicket(
+      'alpha-project',
+      '001-move-me',
+      'in-progress'
+    );
+    expect(collision).toEqual({
+      ok: false,
+      diagnostics: [
+        {
+          path: join(active, '001-move-me.md'),
+          code: 'resource-exists',
+          message: `Resource already exists: ${join(active, '001-move-me.md')}`,
+        },
+      ],
+      partial: false,
+    });
+    expect(await readFile(join(todo, '001-move-me.md'), 'utf8')).toBe(source);
+    await rm(join(active, '001-move-me.md'), { recursive: true });
+    const moved = await tracker.moveTicket(
+      'alpha-project',
+      '001-move-me',
+      'in-progress'
+    );
+    expect(moved.ok).toBe(true);
+    if (!moved.ok) throw new Error(moved.diagnostics[0]?.message);
+    expect(moved.value.path).toBe(join(active, '001-move-me.md'));
+    expect(await readFile(moved.value.path, 'utf8')).toBe(source);
+  });
+
+  test('completion creates done, preserves the target, cleans blockers, and is idempotent', async () => {
+    const workspaceRoot = await temporaryWorkspace();
+    const alphaTodo = join(workspaceRoot, 'alpha-project', 'todo');
+    const betaTodo = join(workspaceRoot, 'beta-project', 'todo');
+    await Promise.all([
+      mkdir(alphaTodo, { recursive: true }),
+      mkdir(betaTodo, { recursive: true }),
+    ]);
+    const completedSource =
+      '---\nAssigned-To: pi\nBlocked-By: [999-still-recorded]\n---\nCompleted bytes\r\n';
+    await writeFile(join(alphaTodo, '001-finish.md'), completedSource);
+    await writeFile(
+      join(alphaTodo, '002-local.md'),
+      '---\nParent: 001-finish\nBlocked-By: [001-finish, 003-other]\n---\n'
+    );
+    await writeFile(
+      join(betaTodo, '001-cross.md'),
+      '---\nBlocked-By: [alpha-project/001-finish]\n---\n'
+    );
+    const tracker = createTracker(workspaceRoot);
+    const completedPath = join(
+      workspaceRoot,
+      'alpha-project',
+      'done',
+      '001-finish.md'
+    );
+
+    const first = await tracker.completeTicket('alpha-project', '001-finish');
+    expect(first.ok).toBe(true);
+    expect(await readFile(completedPath, 'utf8')).toBe(completedSource);
+    const local = await tracker.readTicket(
+      'alpha-project',
+      'todo',
+      '002-local'
+    );
+    expect(local.ok).toBe(true);
+    if (!local.ok) throw new Error(local.diagnostic.message);
+    expect(local.value.metadata).toEqual({
+      Parent: '001-finish',
+      'Blocked-By': ['003-other'],
+    });
+    const cross = await tracker.readTicket('beta-project', 'todo', '001-cross');
+    expect(cross.ok).toBe(true);
+    if (!cross.ok) throw new Error(cross.diagnostic.message);
+    expect(cross.value.metadata['Blocked-By']).toEqual([]);
+
+    await writeFile(
+      join(betaTodo, '002-late.md'),
+      '---\nBlocked-By: [alpha-project/001-finish]\n---\n'
+    );
+    const second = await tracker.moveTicket(
+      'alpha-project',
+      '001-finish',
+      'done'
+    );
+    expect(second.ok).toBe(true);
+    expect(await readFile(completedPath, 'utf8')).toBe(completedSource);
+    const late = await tracker.readTicket('beta-project', 'todo', '002-late');
+    expect(late.ok).toBe(true);
+    if (!late.ok) throw new Error(late.diagnostic.message);
+    expect(late.value.metadata['Blocked-By']).toEqual([]);
+
+    const movedOut = await tracker.moveTicket(
+      'alpha-project',
+      '001-finish',
+      'todo'
+    );
+    expect(movedOut.ok).toBe(true);
+    expect(await readFile(join(alphaTodo, '001-finish.md'), 'utf8')).toBe(
+      completedSource
+    );
+    const stillClean = await tracker.readTicket(
+      'beta-project',
+      'todo',
+      '002-late'
+    );
+    expect(stillClean.ok).toBe(true);
+    if (!stillClean.ok) throw new Error(stillClean.diagnostic.message);
+    expect(stillClean.value.metadata['Blocked-By']).toEqual([]);
+  });
+
+  test('reports the actual cross-status rename collision and preserves both files', async () => {
+    const workspaceRoot = await temporaryWorkspace();
+    const projectPath = join(workspaceRoot, 'alpha-project');
+    const todo = join(projectPath, 'todo');
+    const done = join(projectPath, 'done');
+    await Promise.all([
+      mkdir(todo, { recursive: true }),
+      mkdir(done, { recursive: true }),
+    ]);
+    const sourcePath = join(todo, '001-old.md');
+    const collisionPath = join(done, '001-new.md');
+    await writeFile(sourcePath, '---\n---\nsource');
+    await writeFile(collisionPath, '---\n---\ncollision');
+
+    expect(
+      await createTracker(workspaceRoot).renameTicket(
+        'alpha-project',
+        '001-old',
+        'new'
+      )
+    ).toEqual({
+      ok: false,
+      diagnostics: [
+        {
+          path: collisionPath,
+          code: 'resource-exists',
+          message: `Resource already exists: ${collisionPath}`,
+        },
+      ],
+      partial: false,
+    });
+    expect(await readFile(sourcePath, 'utf8')).toBe('---\n---\nsource');
+    expect(await readFile(collisionPath, 'utf8')).toBe('---\n---\ncollision');
+  });
+
+  test('completion collisions preserve the source without cleanup', async () => {
+    const workspaceRoot = await temporaryWorkspace();
+    const projectPath = join(workspaceRoot, 'alpha-project');
+    const todo = join(projectPath, 'todo');
+    const done = join(projectPath, 'done');
+    await Promise.all([
+      mkdir(todo, { recursive: true }),
+      mkdir(done, { recursive: true }),
+    ]);
+    const sourcePath = join(todo, '001-finish.md');
+    const collisionPath = join(done, '001-finish.md');
+    await writeFile(sourcePath, '---\n---\nsource');
+    await mkdir(collisionPath);
+    await writeFile(
+      join(todo, '002-dependent.md'),
+      '---\nBlocked-By: [001-finish]\n---\n'
+    );
+
+    const outcome = await createTracker(workspaceRoot).completeTicket(
+      'alpha-project',
+      '001-finish'
+    );
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) throw new Error('Expected collision');
+    expect(outcome.partial).toBe(false);
+    expect(outcome.diagnostics[0]?.path).toBe(collisionPath);
+    expect(await readFile(sourcePath, 'utf8')).toBe('---\n---\nsource');
+    expect(await readFile(join(todo, '002-dependent.md'), 'utf8')).toContain(
+      '001-finish'
+    );
+  });
+
+  test('retains successful cleanup when malformed files cause sorted partial failures', async () => {
+    const workspaceRoot = await temporaryWorkspace();
+    const todo = join(workspaceRoot, 'alpha-project', 'todo');
+    await mkdir(todo, { recursive: true });
+    await writeFile(join(todo, '001-old.md'), '---\nBlocked-By: []\n---\n');
+    await writeFile(
+      join(todo, '002-updated.md'),
+      '---\nParent: 001-old\nBlocked-By: [001-old]\n---\n'
+    );
+    const malformedA = join(todo, '003-malformed.md');
+    const malformedB = join(todo, '004-duplicate.md');
+    await writeFile(malformedA, 'not front matter\n');
+    await writeFile(malformedB, '---\nParent: 001-old\nParent: 001-old\n---\n');
+
+    const outcome = await createTracker(workspaceRoot).renameTicket(
+      'alpha-project',
+      '001-old',
+      'renamed'
+    );
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) throw new Error('Expected partial failure');
+    expect(outcome.partial).toBe(true);
+    expect(outcome.diagnostics.map(({ path }) => path)).toEqual([
+      malformedA,
+      malformedB,
+    ]);
+    expect(outcome.diagnostics.map(({ code }) => code)).toEqual([
+      'malformed-ticket-yaml',
+      'duplicate-ticket-key',
+    ]);
+    expect(await readFile(join(todo, '001-renamed.md'), 'utf8')).toBe(
+      '---\nBlocked-By: []\n---\n'
+    );
+    const updated = await createTracker(workspaceRoot).readTicket(
+      'alpha-project',
+      'todo',
+      '002-updated'
+    );
+    expect(updated.ok).toBe(true);
+    if (!updated.ok) throw new Error(updated.diagnostic.message);
+    expect(updated.value.metadata).toEqual({
+      Parent: '001-renamed',
+      'Blocked-By': ['001-renamed'],
+    });
+  });
+
+  test('completion keeps its move and successful cleanup after malformed-file failures', async () => {
+    const workspaceRoot = await temporaryWorkspace();
+    const todo = join(workspaceRoot, 'alpha-project', 'todo');
+    await mkdir(todo, { recursive: true });
+    const source = '---\nAssigned-To: pi\nBlocked-By: []\n---\nExact\r\n';
+    await writeFile(join(todo, '001-finish.md'), source);
+    await writeFile(
+      join(todo, '002-dependent.md'),
+      '---\nBlocked-By: [001-finish]\n---\n'
+    );
+    const malformed = join(todo, '003-malformed.md');
+    await writeFile(malformed, 'malformed\n');
+
+    const outcome = await createTracker(workspaceRoot).completeTicket(
+      'alpha-project',
+      '001-finish'
+    );
+    expect(outcome).toEqual({
+      ok: false,
+      diagnostics: [
+        {
+          path: malformed,
+          code: 'malformed-ticket-yaml',
+          message: 'YAML front matter is missing or not delimited correctly',
+        },
+      ],
+      partial: true,
+    });
+    expect(
+      await readFile(
+        join(workspaceRoot, 'alpha-project', 'done', '001-finish.md'),
+        'utf8'
+      )
+    ).toBe(source);
+    const dependent = await createTracker(workspaceRoot).readTicket(
+      'alpha-project',
+      'todo',
+      '002-dependent'
+    );
+    expect(dependent.ok).toBe(true);
+    if (!dependent.ok) throw new Error(dependent.diagnostic.message);
+    expect(dependent.value.metadata['Blocked-By']).toEqual([]);
+  });
+});
