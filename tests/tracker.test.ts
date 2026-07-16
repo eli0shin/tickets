@@ -403,6 +403,171 @@ describe('tracker project lint', () => {
   });
 });
 
+describe('tracker read-only queries', () => {
+  test('lists and searches real ticket files with defaults, AND criteria, and ID ordering', async () => {
+    const workspaceRoot = await temporaryWorkspace();
+    const projectPath = join(workspaceRoot, 'alpha-project');
+    await mkdir(join(projectPath, 'todo'), { recursive: true });
+    await mkdir(join(projectPath, 'done'));
+    await writeFile(
+      join(projectPath, 'todo', '010-later.md'),
+      '---\nAssigned-To: pi\nTags: [task, urgent]\nParent: 001-parent\nBlocked-By: [002-first, 003-second]\n---\nLater\n'
+    );
+    await writeFile(
+      join(projectPath, 'done', '002-earlier.md'),
+      '---\nUnknown: retained\n---\nEarlier\n'
+    );
+    await writeFile(
+      join(projectPath, 'todo', '003-middle.md'),
+      '---\nAssigned-To:\nTags: [task]\nParent:\nBlocked-By: []\n---\nMiddle\n'
+    );
+
+    const tracker = createTracker(workspaceRoot);
+    expect(await tracker.listTickets('alpha-project', 'todo')).toEqual({
+      project: 'alpha-project',
+      tickets: [
+        {
+          id: 3n,
+          name: '003-middle',
+          status: 'todo',
+          path: join(projectPath, 'todo', '003-middle.md'),
+          assignedTo: null,
+          tags: ['task'],
+          parent: null,
+          blockedBy: [],
+        },
+        {
+          id: 10n,
+          name: '010-later',
+          status: 'todo',
+          path: join(projectPath, 'todo', '010-later.md'),
+          assignedTo: 'pi',
+          tags: ['task', 'urgent'],
+          parent: '001-parent',
+          blockedBy: ['002-first', '003-second'],
+        },
+      ],
+      diagnostics: [],
+      fatal: false,
+    });
+
+    const all = await tracker.searchTickets('alpha-project');
+    expect(all.tickets.map((ticket) => ticket.name)).toEqual([
+      '002-earlier',
+      '003-middle',
+      '010-later',
+    ]);
+    expect(all.tickets[0]).toEqual({
+      id: 2n,
+      name: '002-earlier',
+      status: 'done',
+      path: join(projectPath, 'done', '002-earlier.md'),
+      assignedTo: null,
+      tags: [],
+      parent: null,
+      blockedBy: [],
+    });
+    expect(
+      (
+        await tracker.searchTickets('alpha-project', {
+          statuses: ['todo'],
+          tags: ['task', 'urgent'],
+          assignedTo: ['pi'],
+          parents: ['001-parent'],
+          blockedBy: ['002-first', '003-second'],
+        })
+      ).tickets.map((ticket) => ticket.name)
+    ).toEqual(['010-later']);
+    expect(
+      (
+        await tracker.searchTickets('alpha-project', {
+          unassigned: true,
+          unblocked: true,
+        })
+      ).tickets.map((ticket) => ticket.name)
+    ).toEqual(['002-earlier', '003-middle']);
+    expect(
+      (
+        await tracker.searchTickets('alpha-project', {
+          tags: ['task', 'missing'],
+        })
+      ).tickets
+    ).toEqual([]);
+  });
+
+  test('retains valid results and deterministically reports malformed ticket files', async () => {
+    const workspaceRoot = await temporaryWorkspace();
+    const statusPath = join(workspaceRoot, 'alpha-project', 'todo');
+    await mkdir(statusPath, { recursive: true });
+    await writeFile(join(statusPath, '001-valid.md'), '---\nTags: []\n---\n');
+    await writeFile(
+      join(statusPath, '002-invalid-field.md'),
+      '---\nTags: not-an-array\n---\n'
+    );
+    await writeFile(
+      join(statusPath, '003-malformed.md'),
+      '---\nTags: [broken\n---\n'
+    );
+
+    const result = await createTracker(workspaceRoot).listTickets(
+      'alpha-project',
+      'todo'
+    );
+    expect(result.tickets.map((ticket) => ticket.name)).toEqual(['001-valid']);
+    expect(
+      result.diagnostics.map(({ path, code }) => ({ path, code }))
+    ).toEqual([
+      {
+        path: join(statusPath, '002-invalid-field.md'),
+        code: 'invalid-ticket-metadata',
+      },
+      {
+        path: join(statusPath, '003-malformed.md'),
+        code: 'malformed-ticket-yaml',
+      },
+    ]);
+  });
+
+  test('shows unchanged local and cross-project tickets and rejects ambiguous references', async () => {
+    const workspaceRoot = await temporaryWorkspace();
+    const source = '---\r\nTags: []\r\n---\r\nExact body\r\n';
+    await mkdir(join(workspaceRoot, 'alpha-project', 'todo'), {
+      recursive: true,
+    });
+    await mkdir(join(workspaceRoot, 'beta-project', 'done'), {
+      recursive: true,
+    });
+    await writeFile(
+      join(workspaceRoot, 'beta-project', 'done', '001-exact.md'),
+      source
+    );
+    const tracker = createTracker(workspaceRoot);
+    expect(await tracker.showTicket('../outside', '001-exact')).toEqual({
+      ok: false,
+      diagnostic: {
+        path: workspaceRoot,
+        code: 'invalid-name',
+        message: 'Invalid project name: ../outside',
+      },
+    });
+    expect(
+      await tracker.showTicket('alpha-project', 'beta-project/001-exact')
+    ).toEqual({ ok: true, value: source });
+
+    await mkdir(join(workspaceRoot, 'beta-project', 'todo'));
+    await writeFile(
+      join(workspaceRoot, 'beta-project', 'todo', '001-exact.md'),
+      source
+    );
+    const ambiguous = await tracker.showTicket('beta-project', '001-exact');
+    expect(ambiguous.ok).toBe(false);
+    if (ambiguous.ok) throw new Error('Expected ambiguous reference');
+    expect(ambiguous.diagnostic.message).toBe(
+      'Ticket reference is ambiguous: 001-exact'
+    );
+  });
+});
+
 describe('tracker document parsing and canonical writing', () => {
   test('parses project metadata and retains optional and unknown fields semantically', async () => {
     const workspaceRoot = await temporaryWorkspace();

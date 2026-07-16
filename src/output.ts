@@ -1,10 +1,21 @@
 import type { ProjectSelection } from './git.ts';
-import type { LintViolation } from './tracker/index.ts';
+import type {
+  DocumentDiagnostic,
+  LintViolation,
+  Project,
+  QueryResult,
+  Status,
+} from './tracker/index.ts';
 
+type NamedResource = Pick<Project | Status, 'name' | 'path'>;
 type ProjectSelectionFailure = Extract<ProjectSelection, { ok: false }>;
 
 export function writeSuccess(value: string): void {
   process.stdout.write(`${value}\n`);
+}
+
+export function writeRaw(value: string): void {
+  process.stdout.write(value);
 }
 
 export function writeDiagnostic(message: string): void {
@@ -46,4 +57,78 @@ export function writeLint(
       `${violation.path}\t${violation.code}\t${violation.message}\n`
     );
   }
+}
+
+export function writeDiagnostics(
+  diagnostics: readonly DocumentDiagnostic[],
+  includePath = true
+): void {
+  for (const diagnostic of diagnostics) {
+    writeDiagnostic(
+      includePath
+        ? `${diagnostic.path}\t${diagnostic.message}`
+        : diagnostic.message
+    );
+  }
+}
+
+export function writeProjectList(
+  projects: readonly NamedResource[],
+  json: boolean
+): void {
+  if (json) {
+    writeJson({ projects });
+    return;
+  }
+  writeRecords(projects.map((project) => [project.name, project.path]));
+}
+
+export function writeStatusList(
+  project: string,
+  statuses: readonly NamedResource[],
+  json: boolean
+): void {
+  if (json) {
+    writeJson({
+      project,
+      statuses: statuses.map((status) => ({
+        name: status.name,
+        path: status.path,
+      })),
+    });
+    return;
+  }
+  writeRecords(statuses.map((status) => [status.name, status.path]));
+}
+
+export function writeTicketQuery(result: QueryResult, json: boolean): void {
+  if (json) {
+    writeJson({
+      project: result.project,
+      tickets: result.tickets.map((ticket) => ({
+        name: ticket.name,
+        status: ticket.status,
+        path: ticket.path,
+        assignedTo: ticket.assignedTo,
+        tags: ticket.tags,
+        parent: ticket.parent,
+        blockedBy: ticket.blockedBy,
+      })),
+    });
+    return;
+  }
+  writeRecords(
+    result.tickets.map((ticket) => [ticket.status, ticket.name, ticket.path])
+  );
+}
+
+function writeRecords(records: readonly (readonly string[])[]): void {
+  if (records.length === 0) return;
+  process.stdout.write(
+    `${records.map((fields) => fields.join('\t')).join('\n')}\n`
+  );
+}
+
+function writeJson(value: unknown): void {
+  process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
 }
