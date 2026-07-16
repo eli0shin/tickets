@@ -56,6 +56,12 @@ describe('remote normalization', () => {
     ],
     ['https://example.com:8443/Owner/Repo', 'example.com:8443/owner/repo'],
     ['git@example.com:Owner/Repo ', 'example.com/owner/repo '],
+    ['https://example.com/Owner/Répo.git', 'example.com/owner/répo'],
+    ['git@example.com:Owner/Répo.git', 'example.com/owner/répo'],
+    ['https://example.com/Owner/%52epo.git', 'example.com/owner/repo'],
+    ['https://example.com/Owner%2FRepo.git', 'example.com/owner%2frepo'],
+    ['https://example.com/Owner%252FRepo.git', 'example.com/owner%252frepo'],
+    ['git@example.com:Owner%2FRepo.git', 'example.com/owner%252frepo'],
     [
       'https://münich.example/Owner/Repo.git',
       'xn--mnich-kva.example/owner/repo',
@@ -75,6 +81,12 @@ describe('remote normalization', () => {
     });
   }
 
+  test('keeps an encoded separator distinct from an encoded literal percent sequence', () => {
+    expect(normalizeRemote('https://example.com/Owner%2FRepo.git')).not.toBe(
+      normalizeRemote('https://example.com/Owner%252FRepo.git')
+    );
+  });
+
   const invalidRemotes = [
     '',
     '/home/user/repo',
@@ -83,6 +95,7 @@ describe('remote normalization', () => {
     'https://example.com',
     'https://example.com/.git',
     'https://example.com/owner/repo?ref=main',
+    'https://example.com/owner/%ZZrepo',
     'git@exa%2Fmple.com:owner/repo',
     'git@exa%EF%BC%8Fmple.com:owner/repo',
     'git@exa%252Fmple.com:owner/repo',
@@ -120,6 +133,39 @@ describe('project selection', () => {
       ).toEqual({ ok: true, project: 'selected' });
     });
   }
+
+  test('matches URI escapes with an equivalent literal SCP path', async () => {
+    await setOrigin('https://example.com/Owner/R%C3%A9%70o.git');
+
+    expect(
+      await selectProject({
+        cwd: repository,
+        loadProjects: async () => [
+          { name: 'selected', gitRepo: 'git@example.com:Owner/Répo.git' },
+        ],
+      })
+    ).toEqual({ ok: true, project: 'selected' });
+  });
+
+  test('does not match an encoded URI separator with a literal SCP percent sequence', async () => {
+    await setOrigin('https://example.com/Owner%2FRepo.git');
+
+    expect(
+      await selectProject({
+        cwd: repository,
+        loadProjects: async () => [
+          {
+            name: 'literal-percent',
+            gitRepo: 'git@example.com:Owner%2FRepo.git',
+          },
+        ],
+      })
+    ).toEqual({
+      ok: false,
+      reason: 'no-match',
+      origin: 'example.com/owner%2frepo',
+    });
+  });
 
   const idnUriRemotes = [
     'https://münich.example/owner/repo',

@@ -53,7 +53,10 @@ export function normalizeRemote(remote: string): string | undefined {
   const scp = /^(?:[^@/:\s]+@)?(\[[^\]]+\]|[^/:\s]+):(.+)$/u.exec(value);
   if (!scp) return undefined;
 
-  return normalizeLocation({ host: scp[1], path: scp[2] });
+  return normalizeLocation({
+    host: scp[1],
+    path: encodeLiteralPercents(scp[2]),
+  });
 }
 
 /** Select an explicit project or discover one from the containing worktree's origin. */
@@ -137,12 +140,36 @@ function parseUri(value: string): Location | undefined {
       return undefined;
     }
 
+    const path = canonicalizeUriPath(url.pathname);
+    if (path === undefined) return undefined;
+
     const scheme = url.protocol.slice(0, -1).toLowerCase();
     const port = url.port === defaultPorts.get(scheme) ? '' : url.port;
-    return { host: url.hostname, path: url.pathname, port };
+    return { host: url.hostname, path, port };
   } catch {
     return undefined;
   }
+}
+
+function canonicalizeUriPath(path: string): string | undefined {
+  try {
+    // Decode around encoded separators, then escape decoded literal percents so
+    // `%2F` and `%252F` retain distinct normalized identities.
+    return path
+      .split(/(%2f)/giu)
+      .map((part) =>
+        /^%2f$/iu.test(part)
+          ? '%2f'
+          : encodeLiteralPercents(decodeURIComponent(part))
+      )
+      .join('');
+  } catch {
+    return undefined;
+  }
+}
+
+function encodeLiteralPercents(path: string): string {
+  return path.replaceAll('%', '%25');
 }
 
 function normalizeLocation(location: Location): string | undefined {
