@@ -31,11 +31,13 @@ Tickets stores all durable state in directly editable Markdown files and directo
 
 ### Names
 
-Project names, status names, tag values, assignee names, and ticket descriptions use lowercase kebab-case:
+Project names, status names, tag values, assignee names, and on-disk ticket descriptions use lowercase kebab-case:
 
 ```regex
 ^[a-z0-9]+(?:-[a-z0-9]+)*$
 ```
+
+Create and rename accept human-readable description input and deterministically normalize it to the on-disk form: compatibility-decompose Unicode, lowercase it, remove combining marks, replace each run outside ASCII `a-z` and `0-9` with one hyphen, and trim leading or trailing hyphens. Input is invalid when normalization leaves no description. Already-normalized input is preserved exactly.
 
 A ticket filename is `<id>-<description>.md`. The positive decimal ID is padded to at least three digits, starts at `001`, grows naturally beyond `999`, and is unique across every status in its project. The CLI allocates one greater than the highest currently discovered project ID. It keeps no hidden allocation history, so manually deleting the highest ticket can permit that ID to be reused. Simultaneous mutations are outside the filesystem contract; duplicate IDs produced by races remain visible to discovery and lint.
 

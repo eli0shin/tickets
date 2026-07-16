@@ -65,7 +65,7 @@ tickets search
   [--json]
 ```
 
-Creation uses the project's `Default-Status` unless `--status` overrides it. It writes the standard front matter with supplied metadata and an empty Markdown body.
+Creation uses the project's `Default-Status` unless `--status` overrides it. Create and rename accept human-readable descriptions and normalize them deterministically to the lowercase kebab-case on-disk description defined by the filesystem contract. They reject descriptions only when normalization cannot produce that on-disk form. Creation writes the standard front matter with supplied metadata and an empty Markdown body.
 
 `show` prints the complete ticket file unchanged. There is no editor-launching command.
 

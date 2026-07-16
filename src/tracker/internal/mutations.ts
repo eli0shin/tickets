@@ -12,7 +12,11 @@ import {
   discoverStatuses,
   discoverTickets,
 } from './discovery.ts';
-import { isNormalizedName, isTicketReference } from './names.ts';
+import {
+  isNormalizedName,
+  isTicketReference,
+  normalizeTicketDescription,
+} from './names.ts';
 
 export type MutationOutcome =
   | { readonly ok: true; readonly value: Ticket }
@@ -45,7 +49,8 @@ export async function renameTicket(
   reference: string,
   description: string
 ): Promise<MutationOutcome> {
-  if (!isNormalizedName(description)) {
+  const normalizedDescription = normalizeTicketDescription(description);
+  if (normalizedDescription === null) {
     return failed(
       invalid(
         workspaceRoot,
@@ -60,7 +65,7 @@ export async function renameTicket(
   if (!target.ok) return failed(target.diagnostic);
 
   const idText = target.value.name.slice(0, target.value.name.indexOf('-'));
-  const newName = `${idText}-${description}`;
+  const newName = `${idText}-${normalizedDescription}`;
   const destination = join(target.value.status.path, `${newName}.md`);
   const collision = await renameCollision(
     target.value.status.project,
@@ -75,7 +80,7 @@ export async function renameTicket(
   const renamed = {
     ...target.value,
     name: newName,
-    description,
+    description: normalizedDescription,
     path: destination,
   } satisfies Ticket;
   const diagnostics = await cleanReferences(workspaceRoot, {

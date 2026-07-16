@@ -825,6 +825,58 @@ describe('tracker resource creation', () => {
     );
   });
 
+  test('normalizes human-readable descriptions deterministically while preserving kebab-case', async () => {
+    const workspaceRoot = await temporaryWorkspace();
+    const tracker = createTracker(workspaceRoot);
+    await tracker.createProject('alpha-project');
+
+    const cases = [
+      ['already-normalized', 'already-normalized'],
+      [
+        '  Fix incorrect Assigned-To error!  ',
+        'fix-incorrect-assigned-to-error',
+      ],
+      ['Café déjà vu', 'cafe-deja-vu'],
+      ['--- repeated___separators ---', 'repeated-separators'],
+    ] as const;
+    for (const [description, expected] of cases) {
+      const created = await tracker.createTicket('alpha-project', {
+        description,
+      });
+      expect(created.ok).toBe(true);
+      if (!created.ok) throw new Error(created.diagnostic.message);
+      expect(created.value.description).toBe(expected);
+      expect(created.value.name.endsWith(`-${expected}`)).toBe(true);
+    }
+  });
+
+  test('rejects empty and punctuation-only create descriptions without filesystem mutation', async () => {
+    const workspaceRoot = await temporaryWorkspace();
+    const tracker = createTracker(workspaceRoot);
+    await tracker.createProject('alpha-project');
+    const todo = join(workspaceRoot, 'alpha-project', 'todo');
+    const existingPath = join(todo, '001-existing.md');
+    const existingSource =
+      '---\nAssigned-To: pi\nBlocked-By: []\n---\nExisting\n';
+    await writeFile(existingPath, existingSource);
+    const originalEntries = await readdir(todo);
+
+    for (const description of ['', '!!!']) {
+      expect(
+        await tracker.createTicket('alpha-project', { description })
+      ).toEqual({
+        ok: false,
+        diagnostic: {
+          path: workspaceRoot,
+          code: 'invalid-name',
+          message: `Invalid ticket description name: ${description}`,
+        },
+      });
+      expect(await readdir(todo)).toEqual(originalEntries);
+      expect(await readFile(existingPath, 'utf8')).toBe(existingSource);
+    }
+  });
+
   test('supports status overrides and empty standard ticket metadata', async () => {
     const workspaceRoot = await temporaryWorkspace();
     const tracker = createTracker(workspaceRoot);
@@ -852,7 +904,7 @@ describe('tracker resource creation', () => {
       'invalid-reference',
     ]);
     const inputs = [
-      { description: 'Invalid' },
+      { description: '!!! — 中文 😀' },
       { description: 'valid', status: 'Not-Normal' },
       { description: 'valid', assignee: 'Not-Normal' },
       { description: 'valid', tags: ['Not-Normal'] },
@@ -899,7 +951,7 @@ describe('tracker resource creation', () => {
     await mkdir(collisionPath);
 
     const outcome = await tracker.createTicket('alpha-project', {
-      description: 'collision',
+      description: '  Collision!!!  ',
     });
     expect(outcome.ok).toBe(false);
     if (outcome.ok) throw new Error('Expected ticket collision');
@@ -1342,6 +1394,40 @@ describe('tracker document parsing and canonical writing', () => {
 });
 
 describe('tracker ticket mutations', () => {
+  test('rejects empty and punctuation-only rename descriptions without filesystem or reference mutation', async () => {
+    const workspaceRoot = await temporaryWorkspace();
+    const todo = join(workspaceRoot, 'alpha-project', 'todo');
+    await mkdir(todo, { recursive: true });
+    const sourcePath = join(todo, '001-original.md');
+    const dependentPath = join(todo, '002-dependent.md');
+    const source = '---\nAssigned-To: pi\nBlocked-By: []\n---\nOriginal\n';
+    const dependent =
+      '---\nParent: 001-original\nBlocked-By: [001-original]\n---\nDependent\n';
+    await writeFile(sourcePath, source);
+    await writeFile(dependentPath, dependent);
+    const originalEntries = await readdir(todo);
+    const tracker = createTracker(workspaceRoot);
+
+    for (const description of ['', '!!!']) {
+      expect(
+        await tracker.renameTicket('alpha-project', '001-original', description)
+      ).toEqual({
+        ok: false,
+        diagnostics: [
+          {
+            path: workspaceRoot,
+            code: 'invalid-name',
+            message: `Invalid ticket description name: ${description}`,
+          },
+        ],
+        partial: false,
+      });
+      expect(await readdir(todo)).toEqual(originalEntries);
+      expect(await readFile(sourcePath, 'utf8')).toBe(source);
+      expect(await readFile(dependentPath, 'utf8')).toBe(dependent);
+    }
+  });
+
   test('renames with the original ID and rewrites local and cross-project relationships', async () => {
     const workspaceRoot = await temporaryWorkspace();
     const alphaTodo = join(workspaceRoot, 'alpha-project', 'todo');
@@ -1378,7 +1464,11 @@ describe('tracker ticket mutations', () => {
     const tracker = createTracker(workspaceRoot);
     const renamedPath = join(alphaTodo, '001-new-name.md');
     expect(
-      await tracker.renameTicket('alpha-project', '001-old-name', 'new-name')
+      await tracker.renameTicket(
+        'alpha-project',
+        '001-old-name',
+        '  NEW  Name!! '
+      )
     ).toEqual({
       ok: true,
       value: {
@@ -1598,7 +1688,7 @@ describe('tracker ticket mutations', () => {
       await createTracker(workspaceRoot).renameTicket(
         'alpha-project',
         '001-old',
-        'new'
+        ' NEW!!! '
       )
     ).toEqual({
       ok: false,

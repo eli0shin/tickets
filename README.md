@@ -40,6 +40,22 @@ Tickets also checks for updates in a detached background worker. By default it s
 
 `updateBehavior` can be `auto` (silently install), `notify` (print an availability message after commands), or `off` (disable checks). The interval defaults to 24 hours. Update check state is stored in `$XDG_STATE_HOME/tickets-update-state` when set, otherwise `~/.tickets-update-state`.
 
+## Ticket descriptions
+
+Create and rename tickets with ordinary human-readable text:
+
+```bash
+tickets create "fix incorrect Assigned-To error"
+tickets rename 001-old-name "Clarify café behavior"
+```
+
+Descriptions are normalized deterministically to lowercase kebab-case for the
+filename, such as `fix-incorrect-assigned-to-error` and `clarify-cafe-behavior`.
+Whitespace, punctuation, and repeated separators become a single hyphen; leading
+and trailing separators are removed; and Unicode is compatibility-decomposed with
+combining marks removed. Input is rejected when no ASCII letters or digits remain.
+Existing lowercase kebab-case descriptions are preserved exactly.
+
 ## Development
 
 ```bash

@@ -4,7 +4,11 @@ import type { DocumentDiagnostic, Outcome } from './documents.ts';
 import { readTrackerDocument, writeNewTrackerDocument } from './documents.ts';
 import type { Project, Status, Ticket } from './discovery.ts';
 import { discoverStatuses, discoverTickets } from './discovery.ts';
-import { isNormalizedName, isTicketReference } from './names.ts';
+import {
+  isNormalizedName,
+  isTicketReference,
+  normalizeTicketDescription,
+} from './names.ts';
 
 export type CreateTicketInput = {
   readonly description: string;
@@ -120,8 +124,16 @@ export async function createTicket(
   projectName: string,
   input: CreateTicketInput
 ): Promise<Outcome<Ticket>> {
+  const normalizedDescription = normalizeTicketDescription(input.description);
+  if (normalizedDescription === null) {
+    return invalidName(workspaceRoot, 'ticket description', input.description);
+  }
   const validation = validateTicketInput(workspaceRoot, projectName, input);
   if (!validation.ok) return validation;
+  const normalizedInput = {
+    ...input,
+    description: normalizedDescription,
+  } satisfies CreateTicketInput;
 
   const project = {
     name: projectName,
@@ -140,7 +152,7 @@ export async function createTicket(
   if (!projectValidation.ok) return projectValidation;
   const selectedStatus = input.status ?? projectValidation.value;
 
-  return createAllocatedTicket(project, selectedStatus, input);
+  return createAllocatedTicket(project, selectedStatus, normalizedInput);
 }
 
 async function validateProject(
@@ -234,9 +246,6 @@ function validateTicketInput(
 ): Outcome<undefined> {
   if (!isNormalizedName(projectName)) {
     return invalidName(workspaceRoot, 'project', projectName);
-  }
-  if (!isNormalizedName(input.description)) {
-    return invalidName(workspaceRoot, 'ticket description', input.description);
   }
   if (input.status !== undefined && !isNormalizedName(input.status)) {
     return invalidName(workspaceRoot, 'status', input.status);

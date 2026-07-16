@@ -11,6 +11,18 @@ export function isNormalizedName(value: string): boolean {
   return value.length > 0 && NORMALIZED_NAME_PATTERN.test(value);
 }
 
+export function normalizeTicketDescription(value: string): string | null {
+  if (isNormalizedName(value)) return value;
+
+  const normalized = value
+    .normalize('NFKD')
+    .toLowerCase()
+    .replace(/\p{Mark}+/gu, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return normalized.length === 0 ? null : normalized;
+}
+
 export function parseTicketName(value: string): ParsedTicketName | null {
   const match = TICKET_NAME_PATTERN.exec(value);
   if (match === null) return null;
