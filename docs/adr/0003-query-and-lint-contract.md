@@ -22,7 +22,7 @@ Search spans one selected project. With no criteria, it returns every ticket in 
 - parent;
 - blocker, including unblocked.
 
-Every supplied criterion must match. Repeated criteria also use AND semantics. Search is not free-text search and has no generic filtering language.
+Every supplied criterion must match. Repeated status criteria search the union of those statuses; all other repeated criteria use AND semantics. Search is not free-text search and has no generic filtering language.
 
 There is no separate relationship-traversal operation. Direct parent and blocker references are read from a ticket; reverse relationships are found by searching on parent or blocker.
 

@@ -231,7 +231,12 @@ export function createProgram({
   program
     .command('search')
     .description('search tickets using structured criteria')
-    .option('--status <status>', 'match every status', collect, [])
+    .option(
+      '--status <status>',
+      'match tickets in this status (repeatable)',
+      collect,
+      []
+    )
     .option('--tag <tag>', 'match every tag', collect, [])
     .option('--assigned-to <assignee>', 'match every assignee', collect, [])
     .option('--unassigned', 'match unassigned tickets')

@@ -482,6 +482,83 @@ describe('tracker read-only queries', () => {
     ).toEqual([]);
   });
 
+  test('scopes status searches before parsing and unions repeated statuses', async () => {
+    const workspaceRoot = await temporaryWorkspace();
+    const projectPath = join(workspaceRoot, 'alpha-project');
+    const todoPath = join(projectPath, 'todo');
+    const progressPath = join(projectPath, 'in-progress');
+    const donePath = join(projectPath, 'done');
+    await mkdir(todoPath, { recursive: true });
+    await mkdir(progressPath);
+    await mkdir(donePath);
+    await writeFile(join(todoPath, '001-todo.md'), '---\nTags: []\n---\n');
+    await writeFile(
+      join(progressPath, '002-progress.md'),
+      '---\nTags: []\n---\n'
+    );
+    await writeFile(
+      join(donePath, '003-malformed.md'),
+      '---\nTags: [broken\n---\n'
+    );
+
+    const tracker = createTracker(workspaceRoot);
+    expect(
+      await tracker.searchTickets('alpha-project', { statuses: ['todo'] })
+    ).toEqual({
+      project: 'alpha-project',
+      tickets: [
+        {
+          id: 1n,
+          name: '001-todo',
+          status: 'todo',
+          path: join(todoPath, '001-todo.md'),
+          assignedTo: null,
+          tags: [],
+          parent: null,
+          blockedBy: [],
+        },
+      ],
+      diagnostics: [],
+      fatal: false,
+    });
+    expect(
+      (
+        await tracker.searchTickets('alpha-project', {
+          statuses: ['todo', 'in-progress'],
+        })
+      ).tickets.map((ticket) => ticket.name)
+    ).toEqual(['001-todo', '002-progress']);
+
+    const unscoped = await tracker.searchTickets('alpha-project');
+    expect(unscoped.tickets.map((ticket) => ticket.name)).toEqual([
+      '001-todo',
+      '002-progress',
+    ]);
+    expect(
+      unscoped.diagnostics.map(({ path, code }) => ({ path, code }))
+    ).toEqual([
+      {
+        path: join(donePath, '003-malformed.md'),
+        code: 'malformed-ticket-yaml',
+      },
+    ]);
+
+    expect(
+      await tracker.searchTickets('alpha-project', { statuses: ['missing'] })
+    ).toEqual({
+      project: 'alpha-project',
+      tickets: [],
+      diagnostics: [
+        {
+          path: join(projectPath, 'missing'),
+          code: 'status-not-found',
+          message: 'Status not found: missing',
+        },
+      ],
+      fatal: true,
+    });
+  });
+
   test('retains valid results and deterministically reports malformed ticket files', async () => {
     const workspaceRoot = await temporaryWorkspace();
     const statusPath = join(workspaceRoot, 'alpha-project', 'todo');
