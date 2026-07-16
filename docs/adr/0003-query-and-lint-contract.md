@@ -18,7 +18,7 @@ Search spans one selected project. With no criteria, it returns every ticket in 
 
 - status;
 - tag;
-- assignee, including unassigned;
+- exact, case-sensitive assignee name, including unassigned;
 - parent;
 - blocker, including unblocked.
 
@@ -86,7 +86,7 @@ Codes and finding field shapes are compatibility-stable. Messages are determinis
 | `invalid-git-repo` | A non-empty `Git-Repo` cannot be normalized as a supported URI or SCP-style remote. |
 | `malformed-ticket-yaml` | Ticket front matter is missing or cannot be parsed as YAML. |
 | `duplicate-ticket-key` | Ticket front matter contains a duplicate YAML key. |
-| `invalid-assigned-to` | `Assigned-To` is neither empty nor one normalized assignee. |
+| `invalid-assigned-to` | `Assigned-To` is neither empty nor one non-empty string. |
 | `invalid-tags` | `Tags` is not an array of normalized tags. |
 | `invalid-parent` | `Parent` is neither empty nor one syntactically valid ticket reference. |
 | `invalid-blocked-by` | `Blocked-By` is not an array of syntactically valid ticket references. |

@@ -2,6 +2,8 @@
 
 Tickets is a personal, local filesystem tracker for organizing planned work across projects.
 
+Assignees are human or agent names stored exactly as entered. Names such as `Pi` and `Eli Oshinsky` are valid and can be matched exactly with `tickets search --assigned-to`.
+
 ## Install
 
 ```bash

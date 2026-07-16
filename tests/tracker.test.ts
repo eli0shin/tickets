@@ -352,6 +352,56 @@ describe('tracker project lint', () => {
 });
 
 describe('tracker read-only queries', () => {
+  test('preserves and exactly searches human assignee names', async () => {
+    const workspaceRoot = await temporaryWorkspace();
+    const projectPath = join(workspaceRoot, 'alpha-project');
+    const statusPath = join(projectPath, 'todo');
+    const piPath = join(statusPath, '001-pi-ticket.md');
+    await mkdir(statusPath, { recursive: true });
+    await writeFile(
+      join(projectPath, 'project.md'),
+      '---\nDefault-Status: todo\n---\n'
+    );
+    await writeFile(piPath, '---\nAssigned-To: Pi\n---\n');
+
+    const tracker = createTracker(workspaceRoot);
+    expect(await tracker.lintProject('alpha-project')).toEqual({
+      ok: true,
+      violations: [],
+    });
+    expect(
+      (
+        await tracker.searchTickets('alpha-project', {
+          assignedTo: ['Pi'],
+        })
+      ).tickets.map((ticket) => ticket.assignedTo)
+    ).toEqual(['Pi']);
+    expect(
+      (
+        await tracker.searchTickets('alpha-project', {
+          assignedTo: ['pi'],
+        })
+      ).tickets
+    ).toEqual([]);
+
+    const created = await tracker.createTicket('alpha-project', {
+      description: 'eli-ticket',
+      assignee: 'Eli Oshinsky',
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) throw new Error(created.diagnostic.message);
+    expect(await readFile(created.value.path, 'utf8')).toContain(
+      'Assigned-To: Eli Oshinsky\n'
+    );
+    expect(
+      (
+        await tracker.searchTickets('alpha-project', {
+          assignedTo: ['Eli Oshinsky'],
+        })
+      ).tickets.map((ticket) => ticket.assignedTo)
+    ).toEqual(['Eli Oshinsky']);
+  });
+
   test('treats lint-clean quoted empty assignment and parent as absent', async () => {
     const workspaceRoot = await temporaryWorkspace();
     const projectPath = join(workspaceRoot, 'alpha-project');
@@ -906,7 +956,7 @@ describe('tracker resource creation', () => {
     const inputs = [
       { description: '!!! — 中文 😀' },
       { description: 'valid', status: 'Not-Normal' },
-      { description: 'valid', assignee: 'Not-Normal' },
+      { description: 'valid', assignee: '' },
       { description: 'valid', tags: ['Not-Normal'] },
       { description: 'valid', parent: 'bad/reference/shape' },
       { description: 'valid', blockedBy: ['not-a-ticket'] },

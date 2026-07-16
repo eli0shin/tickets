@@ -238,7 +238,12 @@ export function createProgram({
       []
     )
     .option('--tag <tag>', 'match every tag', collect, [])
-    .option('--assigned-to <assignee>', 'match every assignee', collect, [])
+    .option(
+      '--assigned-to <name>',
+      'exactly match every assignee name',
+      collect,
+      []
+    )
     .option('--unassigned', 'match unassigned tickets')
     .option('--parent <reference>', 'match every parent reference', collect, [])
     .option(
@@ -274,7 +279,7 @@ export function createProgram({
       'human-readable text; normalized to lowercase kebab-case'
     )
     .option('--status <status>', 'status for the new ticket')
-    .option('--assign <assignee>', 'assignee for the new ticket')
+    .option('--assign <name>', 'exact assignee name for the new ticket')
     .option('--tag <tag...>', 'one or more tags')
     .option('--parent <reference>', 'parent ticket reference')
     .option('--blocked-by <reference...>', 'one or more blocking references')

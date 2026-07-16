@@ -31,7 +31,7 @@ Tickets stores all durable state in directly editable Markdown files and directo
 
 ### Names
 
-Project names, status names, tag values, assignee names, and on-disk ticket descriptions use lowercase kebab-case:
+Project names, status names, tag values, and on-disk ticket descriptions use lowercase kebab-case:
 
 ```regex
 ^[a-z0-9]+(?:-[a-z0-9]+)*$
@@ -71,7 +71,7 @@ Blocked-By: []
 ---
 ```
 
-- `Assigned-To` is empty or one normalized string.
+- `Assigned-To` is empty or one non-empty string. Human names such as `Pi` and `Eli Oshinsky` are valid and preserved exactly.
 - `Tags` is an array of normalized strings.
 - `Parent` is empty or one ticket reference.
 - `Blocked-By` is an array of ticket references.

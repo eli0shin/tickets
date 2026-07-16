@@ -5,6 +5,7 @@ import { readTrackerDocument, writeNewTrackerDocument } from './documents.ts';
 import type { Project, Status, Ticket } from './discovery.ts';
 import { discoverStatuses, discoverTickets } from './discovery.ts';
 import {
+  isAssigneeName,
   isNormalizedName,
   isTicketReference,
   normalizeTicketDescription,
@@ -250,8 +251,12 @@ function validateTicketInput(
   if (input.status !== undefined && !isNormalizedName(input.status)) {
     return invalidName(workspaceRoot, 'status', input.status);
   }
-  if (input.assignee !== undefined && !isNormalizedName(input.assignee)) {
-    return invalidName(workspaceRoot, 'assignee', input.assignee);
+  if (input.assignee !== undefined && !isAssigneeName(input.assignee)) {
+    return failure(
+      workspaceRoot,
+      'invalid-name',
+      'Assignee must be a non-empty string'
+    );
   }
   for (const tag of input.tags ?? []) {
     if (!isNormalizedName(tag)) return invalidName(workspaceRoot, 'tag', tag);

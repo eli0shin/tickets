@@ -1,4 +1,5 @@
 import {
+  isAssigneeName,
   isNormalizedName,
   isTicketReference,
   type Project,
@@ -117,11 +118,15 @@ export function validateSearchInput(
   for (const [kind, values] of [
     ['status', input.status],
     ['tag', input.tag],
-    ['assignee', input.assignedTo],
   ] as const) {
     for (const value of values ?? []) {
       const validation = validateName(kind, value);
       if (!validation.ok) return validation;
+    }
+  }
+  for (const assignee of input.assignedTo ?? []) {
+    if (!isAssigneeName(assignee)) {
+      return failure('Assignee must be a non-empty string');
     }
   }
   for (const reference of [

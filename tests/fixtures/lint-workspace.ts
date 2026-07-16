@@ -85,7 +85,7 @@ export async function createLintWorkspace(
     'ticket-errors',
     'todo',
     '001-invalid-fields',
-    '---\nAssigned-To: Not_Normalized\nTags: [valid, Invalid]\nParent: invalid/reference/path\nBlocked-By: not-an-array\n---\n'
+    '---\nAssigned-To: [Pi]\nTags: [valid, Invalid]\nParent: invalid/reference/path\nBlocked-By: not-an-array\n---\n'
   );
   await ticket(
     workspaceRoot,

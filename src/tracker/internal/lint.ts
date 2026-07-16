@@ -5,6 +5,7 @@ import { normalizeRemote } from '../../git.ts';
 import type { DocumentDiagnostic } from './documents.ts';
 import { readTrackerDocument } from './documents.ts';
 import {
+  isAssigneeName,
   isNormalizedName,
   isTicketReference,
   parseTicketName,
@@ -196,11 +197,11 @@ export async function lintProject(
 
     const metadata = document.value.metadata;
     const assignedTo = metadata['Assigned-To'];
-    if (!isEmpty(assignedTo) && !isNormalizedString(assignedTo)) {
+    if (!isEmpty(assignedTo) && !isAssigneeName(assignedTo)) {
       violations.push({
         path: ticket.path,
         code: 'invalid-assigned-to',
-        message: 'Assigned-To must be empty or one normalized assignee',
+        message: 'Assigned-To must be empty or one non-empty string',
       });
     }
 

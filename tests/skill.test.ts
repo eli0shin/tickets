@@ -35,7 +35,7 @@ After directly editing standard metadata, run \`tickets lint\`; the edit is comp
 
 ## Claim before executing ticket work
 
-Read the ticket and confirm \`Assigned-To\` is empty before claiming it. Never overwrite another assignee. On the first claim in an agent session, invent one normalized assignee named \`agent-<12-random-lowercase-hex-digits>\` and reuse it throughout that session. Write it directly to \`Assigned-To\`, then run \`tickets lint\`.
+Read the ticket and confirm \`Assigned-To\` is empty before claiming it. Never overwrite another assignee. Use the human or agent name supplied by the user, project, or harness and preserve it exactly. If none is supplied, choose one recognizable name and reuse it throughout that session. Write it directly to \`Assigned-To\`, then run \`tickets lint\`.
 
 Move the ticket to another status only when the user or project conventions identify the work status.
 
