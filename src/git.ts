@@ -32,6 +32,7 @@ export type SelectProjectOptions = {
 };
 
 const repositoryOverrideVariables = new Set([
+  'GIT_CEILING_DIRECTORIES',
   'GIT_COMMON_DIR',
   'GIT_DIR',
   'GIT_WORK_TREE',
@@ -213,7 +214,7 @@ async function runGit(cwd: string, arguments_: string[]): Promise<GitResult> {
   return await new Promise((resolve) => {
     const environment = Object.fromEntries(
       Object.entries(process.env).filter(
-        ([name]) => !repositoryOverrideVariables.has(name)
+        ([name]) => !repositoryOverrideVariables.has(name.toUpperCase())
       )
     );
 

@@ -12,19 +12,30 @@ import { formatProjectSelectionFailure } from '../src/output.ts';
 
 let temporaryDirectory: string;
 let repository: string;
+const repositoryOverrideVariables = new Set([
+  'GIT_COMMON_DIR',
+  'GIT_DIR',
+  'GIT_WORK_TREE',
+]);
 const originalGitDirectory = process.env.GIT_DIR;
 const originalGitWorkTree = process.env.GIT_WORK_TREE;
 const originalGitCommonDirectory = process.env.GIT_COMMON_DIR;
 
 async function git(arguments_: string[], cwd = repository): Promise<string> {
-  const process = Bun.spawn(['git', '-C', cwd, ...arguments_], {
+  const environment = Object.fromEntries(
+    Object.entries(process.env).filter(
+      ([name]) => !repositoryOverrideVariables.has(name.toUpperCase())
+    )
+  );
+  const child = Bun.spawn(['git', '-C', cwd, ...arguments_], {
+    env: environment,
     stdout: 'pipe',
     stderr: 'pipe',
   });
   const [stdout, stderr, exitCode] = await Promise.all([
-    new Response(process.stdout).text(),
-    new Response(process.stderr).text(),
-    process.exited,
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+    child.exited,
   ]);
   if (exitCode !== 0) throw new Error(stderr);
   return stdout.trim();
