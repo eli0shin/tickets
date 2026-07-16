@@ -1,4 +1,6 @@
-import { readFile, writeFile } from 'node:fs/promises';
+import { link, open, readFile, unlink, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { dirname, join } from 'node:path';
 import {
   Document,
   isScalar,
@@ -21,11 +23,15 @@ export type DocumentDiagnosticCode =
   | 'duplicate-ticket-key'
   | 'filesystem-error'
   | 'invalid-name'
+  | 'invalid-reference'
+  | 'invalid-status'
   | 'invalid-ticket-metadata'
   | 'not-found'
   | 'malformed-project-yaml'
   | 'malformed-ticket-yaml'
-  | 'serialization-error';
+  | 'resource-exists'
+  | 'serialization-error'
+  | 'status-not-found';
 
 export type DocumentDiagnostic = {
   readonly path: string;
@@ -180,11 +186,110 @@ export async function writeTrackerDocument(
   if (!serialization.ok) return serialization;
 
   try {
-    await writeFile(path, serialization.value, 'utf8');
+    await writeFile(path, serialization.value, { encoding: 'utf8' });
     return { ok: true, value: undefined };
   } catch (error) {
     return filesystemFailure(path, error);
   }
+}
+
+export async function writeNewTrackerDocument(
+  path: string,
+  document: TrackerDocument
+): Promise<Outcome<undefined>> {
+  const serialization = serializeDocument(path, document);
+  if (!serialization.ok) return serialization;
+
+  const temporaryPath = join(dirname(path), `.tickets-${randomUUID()}.tmp`);
+  try {
+    const file = await open(temporaryPath, 'wx');
+    return writeAndPublishNewDocument(
+      path,
+      temporaryPath,
+      file,
+      serialization.value
+    );
+  } catch (error) {
+    return filesystemFailure(temporaryPath, error);
+  }
+}
+
+async function writeAndPublishNewDocument(
+  path: string,
+  temporaryPath: string,
+  file: Awaited<ReturnType<typeof open>>,
+  source: string
+): Promise<Outcome<undefined>> {
+  const write = await writeOwnedTemporary(path, temporaryPath, file, source);
+  if (!write.ok) return write;
+
+  const publication = await publishOwnedTemporary(path, temporaryPath);
+  if (publication.ok) {
+    // Publication succeeded. A cleanup failure must not turn creation into a
+    // failed operation whose caller might roll back the published destination.
+    await unlinkOwnedTemporary(temporaryPath);
+    return { ok: true, value: undefined };
+  }
+
+  const cleanup = await unlinkOwnedTemporary(temporaryPath);
+  return cleanup.ok ? publication : cleanup;
+}
+
+async function writeOwnedTemporary(
+  path: string,
+  temporaryPath: string,
+  file: Awaited<ReturnType<typeof open>>,
+  source: string
+): Promise<Outcome<undefined>> {
+  try {
+    await file.writeFile(source, { encoding: 'utf8' });
+    await file.close();
+    return { ok: true, value: undefined };
+  } catch (error) {
+    try {
+      await file.close();
+    } catch {
+      // Continue cleanup: this invocation uniquely owns the temporary path.
+    }
+    const cleanup = await unlinkOwnedTemporary(temporaryPath);
+    return cleanup.ok ? filesystemFailure(path, error) : cleanup;
+  }
+}
+
+async function publishOwnedTemporary(
+  path: string,
+  temporaryPath: string
+): Promise<Outcome<undefined>> {
+  try {
+    await link(temporaryPath, path);
+    return { ok: true, value: undefined };
+  } catch (error) {
+    if (hasErrorCode(error, new Set(['EEXIST']))) return resourceExists(path);
+    return filesystemFailure(path, error);
+  }
+}
+
+async function unlinkOwnedTemporary(path: string): Promise<Outcome<undefined>> {
+  try {
+    await unlink(path);
+    return { ok: true, value: undefined };
+  } catch (error) {
+    if (hasErrorCode(error, new Set(['ENOENT']))) {
+      return { ok: true, value: undefined };
+    }
+    return filesystemFailure(path, error);
+  }
+}
+
+function resourceExists<T>(path: string): Outcome<T> {
+  return {
+    ok: false,
+    diagnostic: {
+      path,
+      code: 'resource-exists',
+      message: `Resource already exists: ${path}`,
+    },
+  };
 }
 
 function isMetadata(value: unknown): value is Record<string, unknown> {
@@ -351,6 +456,16 @@ function malformedFailure<T>(
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function hasErrorCode(error: unknown, codes: ReadonlySet<string>): boolean {
+  return (
+    error !== null &&
+    typeof error === 'object' &&
+    'code' in error &&
+    typeof error.code === 'string' &&
+    codes.has(error.code)
+  );
 }
 
 function filesystemFailure<T>(path: string, error: unknown): Outcome<T> {

@@ -37,7 +37,7 @@ Project names, status names, tag values, assignee names, and ticket descriptions
 ^[a-z0-9]+(?:-[a-z0-9]+)*$
 ```
 
-A ticket filename is `<id>-<description>.md`. The positive decimal ID is padded to at least three digits, starts at `001`, grows naturally beyond `999`, and is unique across every status in its project. IDs are allocated as one greater than the highest existing project ID and are never reused.
+A ticket filename is `<id>-<description>.md`. The positive decimal ID is padded to at least three digits, starts at `001`, grows naturally beyond `999`, and is unique across every status in its project. The CLI allocates one greater than the highest currently discovered project ID. It keeps no hidden allocation history, so manually deleting the highest ticket can permit that ID to be reused. Simultaneous mutations are outside the filesystem contract; duplicate IDs produced by races remain visible to discovery and lint.
 
 A local ticket reference is the filename without `.md`, such as `002-define-the-on-disk-contract`. A cross-project reference is `<project>/<ticket>`. Paths and statuses are never part of identity.
 

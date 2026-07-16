@@ -4,6 +4,11 @@ import { CommanderError } from 'commander';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { version } from '../package.json';
+import {
+  createProject,
+  createStatus,
+  createTicket,
+} from './commands/create.ts';
 import { lintProject } from './commands/lint.ts';
 import { addReadOnlyCommands } from './commands/read.ts';
 import {
@@ -16,6 +21,7 @@ import {
   formatProjectSelectionFailure,
   writeDiagnostic,
   writeLint,
+  writeMutation,
   writeSuccess,
 } from './output.ts';
 import { createTracker, type DocumentDiagnostic } from './tracker/index.ts';
@@ -54,6 +60,75 @@ export function createProgram({
 
   addReadOnlyCommands(program, selectProjectForCli, cwd);
 
+  const project = program.commands.find(
+    (command) => command.name() === 'project'
+  );
+  if (project === undefined)
+    throw new Error('Project command group is missing');
+
+  project
+    .command('create')
+    .description('create a project')
+    .argument('<name>', 'normalized project name')
+    .option('--default-status <status>', 'default status (replaces todo)')
+    .action(async (name, { defaultStatus }) => {
+      const tracker = trackerFor(program.opts().workspace);
+      writeMutation(await createProject(tracker, name, defaultStatus));
+    });
+
+  const status = program.commands.find(
+    (command) => command.name() === 'status'
+  );
+  if (status === undefined) throw new Error('Status command group is missing');
+
+  status
+    .command('create')
+    .description('create a status in the selected project')
+    .argument('<name>', 'normalized status name')
+    .action(async (name) => {
+      const globals = program.opts();
+      const workspace = workspaceFrom(globals.workspace);
+      const projectName = await selectedProject(
+        workspace,
+        cwd,
+        globals.project
+      );
+      if (projectName === null) return;
+      writeMutation(
+        await createStatus(createTracker(workspace), projectName, name)
+      );
+    });
+
+  program
+    .command('create')
+    .description('create a ticket in the selected project')
+    .argument('<description>', 'normalized ticket description')
+    .option('--status <status>', 'status for the new ticket')
+    .option('--assign <assignee>', 'assignee for the new ticket')
+    .option('--tag <tag...>', 'one or more tags')
+    .option('--parent <reference>', 'parent ticket reference')
+    .option('--blocked-by <reference...>', 'one or more blocking references')
+    .action(async (description, options) => {
+      const globals = program.opts();
+      const workspace = workspaceFrom(globals.workspace);
+      const projectName = await selectedProject(
+        workspace,
+        cwd,
+        globals.project
+      );
+      if (projectName === null) return;
+      writeMutation(
+        await createTicket(createTracker(workspace), projectName, {
+          description,
+          status: options.status,
+          assignee: options.assign,
+          tags: options.tag,
+          parent: options.parent,
+          blockedBy: options.blockedBy,
+        })
+      );
+    });
+
   const skill = program.command('skill').description('manage agent skills');
 
   program
@@ -62,31 +137,9 @@ export function createProgram({
     .option('--json', 'emit JSON output')
     .action(async (options, command) => {
       const globals = command.optsWithGlobals();
-      const workspace = resolve(
-        globals.workspace ?? join(homedir(), '.local/state/tickets')
-      );
-      let repositoryFailure: DocumentDiagnostic | undefined;
-      const selection = await selectProject({
-        cwd,
-        explicitProject: globals.project,
-        loadProjects: async () => {
-          const repositories = await loadProjectRepositories(workspace);
-          if (repositories.ok) return repositories.value;
-          repositoryFailure = repositories.diagnostic;
-          return [];
-        },
-      });
-      if (repositoryFailure !== undefined) {
-        writeDiagnostic(repositoryFailure.message);
-        process.exitCode = 2;
-        return;
-      }
-      if (!selection.ok) {
-        writeDiagnostic(formatProjectSelectionFailure(selection));
-        process.exitCode = 2;
-        return;
-      }
-      const project = selection.project;
+      const workspace = workspaceFrom(globals.workspace);
+      const project = await selectedProject(workspace, cwd, globals.project);
+      if (project === null) return;
       const result = await lintProject(workspace, project);
       if (!result.ok) {
         writeDiagnostic(result.diagnostic.message);
@@ -152,6 +205,43 @@ async function loadProjectRepositories(
     }
   }
   return { ok: true, value: repositories };
+}
+
+async function selectedProject(
+  workspace: string,
+  cwd: string,
+  explicitProject: string | undefined
+): Promise<string | null> {
+  let repositoryFailure: DocumentDiagnostic | undefined;
+  const selection = await selectProject({
+    cwd,
+    explicitProject,
+    loadProjects: async () => {
+      const repositories = await loadProjectRepositories(workspace);
+      if (repositories.ok) return repositories.value;
+      repositoryFailure = repositories.diagnostic;
+      return [];
+    },
+  });
+  if (repositoryFailure !== undefined) {
+    writeDiagnostic(repositoryFailure.message);
+    process.exitCode = 2;
+    return null;
+  }
+  if (!selection.ok) {
+    writeDiagnostic(formatProjectSelectionFailure(selection));
+    process.exitCode = 2;
+    return null;
+  }
+  return selection.project;
+}
+
+function trackerFor(workspace: string | undefined) {
+  return createTracker(workspaceFrom(workspace));
+}
+
+function workspaceFrom(workspace: string | undefined): string {
+  return resolve(workspace ?? join(homedir(), '.local/state/tickets'));
 }
 
 export async function run(argv: string[] = process.argv): Promise<void> {
