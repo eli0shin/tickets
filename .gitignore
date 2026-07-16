@@ -1,4 +1,4 @@
 node_modules/
-tickets
+/tickets
 *.log
 .DS_Store
