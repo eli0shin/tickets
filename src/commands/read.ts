@@ -1,7 +1,13 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { Command } from '@commander-js/extra-typings';
+import type {
+  ProjectRepository,
+  ProjectSelection,
+  SelectProjectOptions,
+} from '../git.ts';
 import {
+  formatProjectSelectionFailure,
   writeDiagnostic,
   writeDiagnostics,
   writeProjectList,
@@ -15,6 +21,7 @@ import {
   isTicketReference,
   type QueryResult,
   type SearchCriteria,
+  type Tracker,
 } from '../tracker/index.ts';
 
 type GlobalOptions = {
@@ -23,8 +30,19 @@ type GlobalOptions = {
 };
 
 type RootCommand = Command<[], GlobalOptions, Record<string, never>>;
+type SelectProjectForCli = (
+  options: SelectProjectOptions
+) => Promise<ProjectSelection>;
 
-export function addReadOnlyCommands(program: RootCommand): void {
+type SelectedTracker = {
+  readonly project: string;
+  readonly tracker: Tracker;
+};
+
+export function addReadOnlyCommands(
+  program: RootCommand,
+  selectProject: SelectProjectForCli
+): void {
   const project = program.command('project').description('manage projects');
   project
     .command('list')
@@ -46,15 +64,14 @@ export function addReadOnlyCommands(program: RootCommand): void {
     .description('list statuses')
     .option('--json', 'emit JSON output')
     .action(async (options: { json?: boolean }) => {
-      const selected = selectedProject(program);
+      const selected = await selectedTracker(program, selectProject);
       if (selected === null) return;
-      const tracker = trackerFor(program);
-      const result = await tracker.discoverStatuses(selected);
+      const result = await selected.tracker.discoverStatuses(selected.project);
       if (result.diagnostics.length > 0) {
         fail(result.diagnostics[0]?.message ?? 'Could not list statuses');
         return;
       }
-      writeStatusList(selected, result.entries, Boolean(options.json));
+      writeStatusList(selected.project, result.entries, Boolean(options.json));
     });
 
   program
@@ -62,9 +79,20 @@ export function addReadOnlyCommands(program: RootCommand): void {
     .description('show a complete ticket document')
     .argument('<reference>')
     .action(async (reference: string) => {
-      const selected = selectedProject(program);
+      if (!validReference(reference)) return;
+      const projectSeparator = reference.indexOf('/');
+      const selected =
+        projectSeparator === -1
+          ? await selectedTracker(program, selectProject)
+          : {
+              project: reference.slice(0, projectSeparator),
+              tracker: trackerFor(program),
+            };
       if (selected === null) return;
-      const result = await trackerFor(program).showTicket(selected, reference);
+      const result = await selected.tracker.showTicket(
+        selected.project,
+        reference
+      );
       if (!result.ok) {
         fail(result.diagnostic.message);
         return;
@@ -78,10 +106,11 @@ export function addReadOnlyCommands(program: RootCommand): void {
     .argument('<status>')
     .option('--json', 'emit JSON output')
     .action(async (statusName: string, options: { json?: boolean }) => {
-      const selected = selectedProject(program);
-      if (selected === null || !validName('status', statusName)) return;
-      const result = await trackerFor(program).listTickets(
-        selected,
+      if (!validName('status', statusName)) return;
+      const selected = await selectedTracker(program, selectProject);
+      if (selected === null) return;
+      const result = await selected.tracker.listTickets(
+        selected.project,
         statusName
       );
       if (queryFailed(result)) return;
@@ -124,8 +153,9 @@ export function addReadOnlyCommands(program: RootCommand): void {
           fail('--blocked-by and --unblocked cannot be used together');
           return;
         }
-        const selected = selectedProject(program);
-        if (selected === null || !validCriteria(options)) return;
+        if (!validCriteria(options)) return;
+        const selected = await selectedTracker(program, selectProject);
+        if (selected === null) return;
         const criteria = {
           statuses: nonEmpty(options.status),
           tags: nonEmpty(options.tag),
@@ -135,8 +165,8 @@ export function addReadOnlyCommands(program: RootCommand): void {
           blockedBy: nonEmpty(options.blockedBy),
           unblocked: options.unblocked,
         } satisfies SearchCriteria;
-        const result = await trackerFor(program).searchTickets(
-          selected,
+        const result = await selected.tracker.searchTickets(
+          selected.project,
           criteria
         );
         if (queryFailed(result)) return;
@@ -211,12 +241,62 @@ function trackerFor(program: RootCommand) {
   );
 }
 
-function selectedProject(program: RootCommand): string | null {
-  const project = program.opts().project;
-  if (project !== undefined)
-    return validName('project', project) ? project : null;
-  fail('Could not select a project; use --project <name>');
-  return null;
+async function selectedTracker(
+  program: RootCommand,
+  selectProject: SelectProjectForCli
+): Promise<SelectedTracker | null> {
+  const tracker = trackerFor(program);
+  const explicitProject = program.opts().project;
+  if (explicitProject !== undefined && !validName('project', explicitProject)) {
+    return null;
+  }
+
+  const selection = await selectProjectSafely(selectProject, {
+    cwd: process.cwd(),
+    explicitProject,
+    loadProjects: () => loadProjectRepositories(tracker),
+  });
+  if (selection === null) return null;
+  if (!selection.ok) {
+    fail(formatProjectSelectionFailure(selection));
+    return null;
+  }
+  return { project: selection.project, tracker };
+}
+
+async function selectProjectSafely(
+  selectProject: SelectProjectForCli,
+  options: SelectProjectOptions
+): Promise<ProjectSelection | null> {
+  try {
+    return await selectProject(options);
+  } catch (error) {
+    fail(error instanceof Error ? error.message : String(error));
+    return null;
+  }
+}
+
+async function loadProjectRepositories(
+  tracker: Tracker
+): Promise<readonly ProjectRepository[]> {
+  const discovery = await tracker.discoverProjects();
+  if (discovery.diagnostics.length > 0) {
+    throw new Error(
+      discovery.diagnostics[0]?.message ?? 'Could not discover projects'
+    );
+  }
+
+  return await Promise.all(
+    discovery.entries.map(async (project) => {
+      const document = await tracker.readProject(project.name);
+      if (!document.ok) return { name: project.name };
+      const gitRepo = document.value.metadata['Git-Repo'];
+      return {
+        name: project.name,
+        gitRepo: typeof gitRepo === 'string' ? gitRepo : undefined,
+      };
+    })
+  );
 }
 
 function partialFailure(

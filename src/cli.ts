@@ -52,7 +52,7 @@ export function createProgram({
     )
     .option('--project <name>', 'select a project by name');
 
-  addReadOnlyCommands(program);
+  addReadOnlyCommands(program, selectProjectForCli);
 
   const skill = program.command('skill').description('manage agent skills');
 

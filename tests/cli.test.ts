@@ -70,6 +70,11 @@ function processEnv(): Record<string, string> {
   );
 }
 
+async function git(cwd: string, arguments_: string[]): Promise<void> {
+  const result = await run(['git', '-C', cwd, ...arguments_]);
+  if (result.exitCode !== 0) throw new Error(result.stderr);
+}
+
 beforeAll(async () => {
   temporaryDirectory = await mkdtemp(join(tmpdir(), 'tickets-packaging-'));
   executablePath = join(temporaryDirectory, 'tickets');
@@ -286,6 +291,89 @@ test('lint reports selection failures only on stderr with exit status 2', async 
 });
 
 describe('read-only commands', () => {
+  test('discovers the selected project from a real Git origin', async () => {
+    const cwd = await mkdtemp(join(temporaryDirectory, 'read-git-selection-'));
+    const workspace = join(cwd, 'workspace');
+    const projectPath = join(workspace, 'alpha-project');
+    const todoPath = join(projectPath, 'todo');
+    const ticketPath = join(todoPath, '001-selected.md');
+    const ticketSource = '---\nTags: [selected]\n---\nSelected by Git\n';
+    await mkdir(todoPath, { recursive: true });
+    await mkdir(join(workspace, 'unrelated-project'));
+    await mkdir(join(workspace, 'malformed-project'));
+    await writeFile(
+      join(workspace, 'malformed-project', 'project.md'),
+      'not YAML front matter\n'
+    );
+    await writeFile(
+      join(projectPath, 'project.md'),
+      '---\nDefault-Status: todo\nGit-Repo: git@example.com:OWNER/REPO.git\n---\n'
+    );
+    await writeFile(ticketPath, ticketSource);
+    await git(cwd, ['init']);
+    await git(cwd, [
+      'remote',
+      'add',
+      'origin',
+      'https://example.com/owner/repo.git',
+    ]);
+
+    const base = [
+      'bun',
+      join(repositoryRoot, 'src/cli.ts'),
+      '--workspace',
+      workspace,
+    ];
+    expect(await run([...base, 'status', 'list'], { cwd })).toEqual({
+      stdout: `todo\t${todoPath}\n`,
+      stderr: '',
+      exitCode: 0,
+    });
+    expect(await run([...base, 'show', '001-selected'], { cwd })).toEqual({
+      stdout: ticketSource,
+      stderr: '',
+      exitCode: 0,
+    });
+    expect(await run([...base, 'list', 'todo'], { cwd })).toEqual({
+      stdout: `todo\t001-selected\t${ticketPath}\n`,
+      stderr: '',
+      exitCode: 0,
+    });
+    expect(
+      await run([...base, 'search', '--tag', 'selected'], { cwd })
+    ).toEqual({
+      stdout: `todo\t001-selected\t${ticketPath}\n`,
+      stderr: '',
+      exitCode: 0,
+    });
+  });
+
+  test('shows a cross-project reference without selecting a project', async () => {
+    const cwd = await mkdtemp(join(temporaryDirectory, 'read-cross-project-'));
+    const workspace = join(cwd, 'workspace');
+    const statusPath = join(workspace, 'beta-project', 'todo');
+    const ticketPath = join(statusPath, '001-cross-project.md');
+    const source = '---\nTags: []\n---\nCross project\n';
+    await mkdir(statusPath, { recursive: true });
+    await writeFile(ticketPath, source);
+    const base = [
+      'bun',
+      join(repositoryRoot, 'src/cli.ts'),
+      '--workspace',
+      workspace,
+      'show',
+    ];
+
+    expect(
+      await run([...base, 'beta-project/001-cross-project'], { cwd })
+    ).toEqual({ stdout: source, stderr: '', exitCode: 0 });
+    expect(await run([...base, 'BAD'], { cwd })).toEqual({
+      stdout: '',
+      stderr: 'Invalid ticket reference: BAD\n',
+      exitCode: 2,
+    });
+  });
+
   test('lists projects and statuses in plain text and JSON from an isolated workspace', async () => {
     const cwd = await mkdtemp(join(temporaryDirectory, 'read-listings-'));
     const workspace = join(cwd, 'workspace');
