@@ -319,23 +319,33 @@ describe('tracker document parsing and canonical writing', () => {
     ).toBe(true);
   });
 
-  test('accepts empty ticket metadata because every standard field is optional', async () => {
+  test('accepts and rewrites comment-only empty ticket metadata', async () => {
     const workspaceRoot = await temporaryWorkspace();
     const statusPath = join(workspaceRoot, 'alpha-project', 'todo');
+    const ticketPath = join(statusPath, '001-empty.md');
     await mkdir(statusPath, { recursive: true });
-    await writeFile(join(statusPath, '001-empty.md'), '---\n---\nBody\n');
+    await writeFile(ticketPath, '---\n# draft\n---\nBody\n');
 
     const { tracker, ticket } = await discoverTicket(workspaceRoot);
-    expect(
-      await tracker.readTicket(
-        ticket.status.project.name,
-        ticket.status.name,
-        ticket.name
-      )
-    ).toEqual({
+    const outcome = await tracker.readTicket(
+      ticket.status.project.name,
+      ticket.status.name,
+      ticket.name
+    );
+    expect(outcome).toEqual({
       ok: true,
       value: { metadata: {}, body: 'Body\n' },
     });
+    if (!outcome.ok) throw new Error(outcome.diagnostic.message);
+    expect(
+      await tracker.writeTicket(
+        ticket.status.project.name,
+        ticket.status.name,
+        ticket.name,
+        outcome.value
+      )
+    ).toEqual({ ok: true, value: undefined });
+    expect(await readFile(ticketPath, 'utf8')).toBe('---\n{}\n---\nBody\n');
   });
 
   test('round-trips semantically valid unknown metadata fields', async () => {

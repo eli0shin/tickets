@@ -127,7 +127,7 @@ export function parseTrackerDocument(
   if (!conversion.ok) return conversion;
 
   let metadata = conversion.value;
-  if (metadata === null && yamlSource.trim() === '') metadata = {};
+  if (metadata === null && document.contents === null) metadata = {};
   if (!isMetadata(metadata)) {
     return {
       ok: false,
