@@ -30,6 +30,7 @@ export type DocumentKind = 'project' | 'ticket';
 type ParsedMetadata = {
   readonly document: Document;
   readonly original: Metadata;
+  readonly root: Metadata;
 };
 
 const parsedMetadata = new WeakMap<object, ParsedMetadata>();
@@ -149,6 +150,7 @@ export function parseTrackerDocument(
   registerParsedMetadata(metadata, {
     document,
     original: snapshotMetadata(metadata),
+    root: metadata,
   });
   return {
     ok: true,
@@ -846,6 +848,9 @@ function reconcileMetadata(
   parsed: ParsedMetadata,
   metadata: Metadata
 ): Document<Node, boolean> {
+  if (metadata !== parsed.root && hasAliasToDocumentRoot(parsed.document)) {
+    throw new Error('Cannot safely detach an alias to the YAML document root');
+  }
   const document = parsed.document.clone();
   if (!isMap(document.contents)) return new Document(metadata);
 
@@ -1017,6 +1022,17 @@ function containsMap(value: unknown, visited: WeakSet<object>): boolean {
   return Object.keys(value).some((key) =>
     containsMap(Reflect.get(value, key), visited)
   );
+}
+
+function hasAliasToDocumentRoot(document: Document): boolean {
+  if (!isMap(document.contents)) return false;
+  let found = false;
+  visit(document, {
+    Alias: (_visitKey, alias) => {
+      if (alias.resolve(document) === document.contents) found = true;
+    },
+  });
+  return found;
 }
 
 function changedFieldsShareObjects(

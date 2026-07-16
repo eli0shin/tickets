@@ -1452,6 +1452,37 @@ describe('tracker document parsing and canonical writing', () => {
     }
   });
 
+  test('leaves detached root aliases untouched after immutable updates', async () => {
+    const workspaceRoot = await temporaryWorkspace();
+    const statusPath = join(workspaceRoot, 'alpha-project', 'todo');
+    const ticketPath = join(statusPath, '001-root-alias-copy.md');
+    await mkdir(statusPath, { recursive: true });
+    const source = '---\n&root\nA: old\nSelf: *root\n---\n';
+    await writeFile(ticketPath, source);
+    const tracker = createTracker(workspaceRoot);
+    const document = await tracker.readTicket(
+      'alpha-project',
+      'todo',
+      '001-root-alias-copy'
+    );
+    if (!document.ok) throw new Error(document.diagnostic.message);
+    expect(document.value.metadata.Self).toBe(document.value.metadata);
+
+    const outcome = await tracker.writeTicket(
+      'alpha-project',
+      'todo',
+      '001-root-alias-copy',
+      {
+        ...document.value,
+        metadata: { ...document.value.metadata, A: 'new' },
+      }
+    );
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) throw new Error('Expected serialization to be refused');
+    expect(outcome.diagnostic.code).toBe('serialization-error');
+    expect(await readFile(ticketPath, 'utf8')).toBe(source);
+  });
+
   test('preserves explicit custom tags on externally aliased old values', async () => {
     const cases: readonly (readonly [string, unknown, unknown])[] = [
       ['!!binary SGk=', Buffer.from('Bye'), Buffer.from('Hi')],
