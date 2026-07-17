@@ -32,7 +32,9 @@ import {
 import { installSkill } from './commands/skill.ts';
 import { updateCommand, type UpdateDependencies } from './commands/update.ts';
 import {
+  inspectGitOrigin,
   selectProject,
+  type GitOriginInspection,
   type ProjectRepository,
   type ProjectSelection,
   type SelectProjectOptions,
@@ -90,9 +92,12 @@ type SelectProjectForCli = (
   options: SelectProjectOptions
 ) => Promise<ProjectSelection>;
 
+type InspectGitOriginForCli = (cwd: string) => Promise<GitOriginInspection>;
+
 type CliDependencies = {
   confirmOverwrite?: ConfirmOverwrite;
   selectProject?: SelectProjectForCli;
+  inspectGitOrigin?: InspectGitOriginForCli;
   update?: UpdateDependencies;
   interactive?: boolean;
   cwd?: string;
@@ -106,6 +111,7 @@ type SearchOptions = SearchInput & { readonly json?: boolean };
 export function createProgram({
   confirmOverwrite: confirm = confirmOverwrite,
   selectProject: select = selectProjectForCli,
+  inspectGitOrigin: inspectOrigin = inspectGitOrigin,
   update,
   interactive = Boolean(process.stdin.isTTY && process.stderr.isTTY),
   cwd = process.cwd(),
@@ -144,11 +150,19 @@ export function createProgram({
     .argument('<name>', 'normalized project name')
     .option('--default-status <status>', 'default status (replaces todo)')
     .action(async (name, { defaultStatus }) => {
+      const inspection = await inspectOrigin(cwd);
+      if (!inspection.ok && inspection.reason === 'git-error') {
+        return writeCommandFailure({
+          kind: 'message',
+          message: `Cannot create a project: Git could not ${inspection.operation === 'inspect-worktree' ? 'inspect the current worktree' : 'read its origin'} (${JSON.stringify(inspection.detail)}).`,
+        });
+      }
       writeMutation(
         await createProject(
           trackerFor(program.opts().workspace),
           name,
-          defaultStatus
+          defaultStatus,
+          inspection.ok ? inspection.origin : undefined
         )
       );
     });

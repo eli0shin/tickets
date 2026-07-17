@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { selectProjectForCli } from '../src/cli.ts';
 import {
+  inspectGitOrigin,
   normalizeRemote,
   selectProject,
   type ProjectRepository,
@@ -135,6 +136,18 @@ describe('remote normalization', () => {
       expect(normalizeRemote(remote)).toBeUndefined();
     });
   }
+});
+
+describe('Git origin inspection', () => {
+  test('returns the origin fetch URL verbatim', async () => {
+    const remote = 'git@example.com:Owner/Repo.git';
+    await setOrigin(remote);
+
+    expect(await inspectGitOrigin(repository)).toEqual({
+      ok: true,
+      origin: remote,
+    });
+  });
 });
 
 describe('project selection', () => {

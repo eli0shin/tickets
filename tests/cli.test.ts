@@ -236,11 +236,15 @@ async function captureProcessOutput(action: () => Promise<void>): Promise<{
 
   try {
     await action();
-    return { stdout, stderr, exitCode: process.exitCode };
+    return {
+      stdout,
+      stderr,
+      exitCode: process.exitCode === 0 ? undefined : process.exitCode,
+    };
   } finally {
     stdoutWrite.mockRestore();
     stderrWrite.mockRestore();
-    process.exitCode = previousExitCode;
+    process.exitCode = previousExitCode ?? 0;
   }
 }
 
@@ -1397,47 +1401,117 @@ describe('resource creation commands', () => {
     const defaultPath = join(workspace, 'default-project');
     const customPath = join(workspace, 'custom-project');
 
+    const cli = ['bun', resolve(repositoryRoot, 'src/cli.ts')];
     expect(
-      await run([
-        'bun',
-        'src/cli.ts',
-        '--workspace',
-        workspace,
-        'project',
-        'create',
-        'default-project',
-      ])
+      await run(
+        [
+          ...cli,
+          '--workspace',
+          workspace,
+          'project',
+          'create',
+          'default-project',
+        ],
+        { cwd: temporaryDirectory }
+      )
     ).toEqual({ stdout: `${defaultPath}\n`, stderr: '', exitCode: 0 });
     expect(
-      await run([
-        'bun',
-        'src/cli.ts',
-        '--workspace',
-        workspace,
-        'project',
-        'create',
-        'custom-project',
-        '--default-status',
-        'backlog',
-      ])
+      await run(
+        [
+          ...cli,
+          '--workspace',
+          workspace,
+          'project',
+          'create',
+          'custom-project',
+          '--default-status',
+          'backlog',
+        ],
+        { cwd: temporaryDirectory }
+      )
     ).toEqual({ stdout: `${customPath}\n`, stderr: '', exitCode: 0 });
     expect(await readFile(join(customPath, 'project.md'), 'utf8')).toBe(
       '---\nDefault-Status: backlog\nGit-Repo:\n---\n'
     );
   });
 
+  test('handles unavailable and failed Git origin inspection during project creation', async () => {
+    const workspace = join(temporaryDirectory, 'creation-origin-outcomes');
+    for (const [name, inspection] of [
+      ['missing-origin', { ok: false, reason: 'missing-origin' }],
+      ['invalid-origin', { ok: false, reason: 'invalid-origin' }],
+    ] as const) {
+      const projectPath = join(workspace, name);
+      expect(
+        await captureProcessOutput(async () => {
+          await createProgram({
+            inspectGitOrigin: async () => inspection,
+          }).parseAsync([
+            'node',
+            'tickets',
+            '--workspace',
+            workspace,
+            'project',
+            'create',
+            name,
+          ]);
+        })
+      ).toEqual({
+        stdout: `${projectPath}\n`,
+        stderr: '',
+        exitCode: undefined,
+      });
+      expect(await readFile(join(projectPath, 'project.md'), 'utf8')).toBe(
+        '---\nDefault-Status: todo\nGit-Repo:\n---\n'
+      );
+    }
+
+    expect(
+      await captureProcessOutput(async () => {
+        await createProgram({
+          inspectGitOrigin: async () => ({
+            ok: false,
+            reason: 'git-error',
+            operation: 'read-origin',
+            detail: 'permission denied',
+          }),
+        }).parseAsync([
+          'node',
+          'tickets',
+          '--workspace',
+          workspace,
+          'project',
+          'create',
+          'git-failure',
+        ]);
+      })
+    ).toEqual({
+      stdout: '',
+      stderr:
+        'Cannot create a project: Git could not read its origin ("permission denied").\n',
+      exitCode: 2,
+    });
+    expect((await readdir(workspace)).sort()).toEqual([
+      'invalid-origin',
+      'missing-origin',
+    ]);
+  });
+
   test('creates a status and fully populated ticket in an explicit project', async () => {
     const workspace = join(temporaryDirectory, 'create-resources');
     const projectPath = join(workspace, 'alpha-project');
-    await run([
-      'bun',
-      'src/cli.ts',
-      '--workspace',
-      workspace,
-      'project',
-      'create',
-      'alpha-project',
-    ]);
+    await run(
+      [
+        'bun',
+        resolve(repositoryRoot, 'src/cli.ts'),
+        '--workspace',
+        workspace,
+        'project',
+        'create',
+        'alpha-project',
+      ],
+      { cwd: temporaryDirectory }
+    );
 
     const statusPath = join(projectPath, 'review');
     expect(
@@ -1496,23 +1570,10 @@ describe('resource creation commands', () => {
     );
   });
 
-  test('discovers the project from Git for status and ticket creation', async () => {
+  test('associates a new project with Git for later discovery', async () => {
     const workspace = join(temporaryDirectory, 'discovered-creation');
     const projectPath = join(workspace, 'discovered-project');
     const repository = join(temporaryDirectory, 'creation-repository');
-    await run([
-      'bun',
-      'src/cli.ts',
-      '--workspace',
-      workspace,
-      'project',
-      'create',
-      'discovered-project',
-    ]);
-    await writeFile(
-      join(projectPath, 'project.md'),
-      '---\nDefault-Status: todo\nGit-Repo: https://example.com/owner/repo.git\n---\n'
-    );
     await mkdir(repository);
     expect(await run(['git', 'init'], { cwd: repository })).toMatchObject({
       exitCode: 0,
@@ -1525,6 +1586,15 @@ describe('resource creation commands', () => {
     ).toMatchObject({ exitCode: 0 });
 
     const cli = ['bun', resolve(repositoryRoot, 'src/cli.ts'), '--workspace'];
+    expect(
+      await run(
+        [...cli, workspace, 'project', 'create', 'discovered-project'],
+        { cwd: repository }
+      )
+    ).toEqual({ stdout: `${projectPath}\n`, stderr: '', exitCode: 0 });
+    expect(await readFile(join(projectPath, 'project.md'), 'utf8')).toBe(
+      '---\nDefault-Status: todo\nGit-Repo: git@example.com:owner/repo.git\n---\n'
+    );
     expect(
       await run([...cli, workspace, 'status', 'create', 'review'], {
         cwd: repository,

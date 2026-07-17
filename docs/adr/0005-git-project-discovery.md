@@ -19,6 +19,12 @@ If the current directory is not in a Git worktree, `origin` is missing or invali
 
 There is no fallback based on the worktree directory name.
 
+## Project creation
+
+The CLI inspects the worktree containing its current directory before creating a project. When that worktree has a valid `origin` fetch URL, the CLI passes the URL verbatim to the tracker and project creation records it as `Git-Repo`. The tracker rejects creation if another project already declares the same normalized repository location.
+
+A directory outside a Git worktree, a missing `origin`, or an invalid `origin` does not prevent project creation; `Git-Repo` remains empty. Unexpected Git inspection failures abort creation with a diagnostic. Git inspection belongs to the CLI boundary, while duplicate validation and metadata persistence belong to the tracker. Project creation has no Git opt-out flag.
+
 ## Remote normalization
 
 `Git-Repo` accepts remote URLs on any host. Normalization recognizes standard URI forms and SCP-style SSH forms:

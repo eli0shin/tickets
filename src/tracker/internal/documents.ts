@@ -22,9 +22,11 @@ export type DocumentKind = 'project' | 'ticket';
 const parsedDocuments = new WeakMap<TrackerDocument, Document>();
 
 export type DocumentDiagnosticCode =
+  | 'duplicate-git-repo'
   | 'duplicate-project-key'
   | 'duplicate-ticket-key'
   | 'filesystem-error'
+  | 'invalid-git-repo'
   | 'invalid-name'
   | 'invalid-reference'
   | 'invalid-status'
