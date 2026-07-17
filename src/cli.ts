@@ -45,7 +45,7 @@ import {
   writeLintOutcome,
   writeMutation,
   writeProjectList,
-  writeRaw,
+  writeShownTicket,
   writeSkillInstallation,
   writeStatusList,
   writeStderr,
@@ -182,7 +182,7 @@ export function createProgram({
 
   program
     .command('show')
-    .description('show a complete ticket document')
+    .description('show a ticket path and complete document')
     .argument('<reference>')
     .action(async (reference) => {
       const validation = validateReference(reference);
@@ -202,7 +202,7 @@ export function createProgram({
           selected.value.project,
           reference
         ),
-        writeRaw
+        writeShownTicket
       );
     });
 

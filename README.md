@@ -58,6 +58,9 @@ and trailing separators are removed; and Unicode is compatibility-decomposed wit
 combining marks removed. Input is rejected when no ASCII letters or digits remain.
 Existing lowercase kebab-case descriptions are preserved exactly.
 
+`tickets show <reference>` prints the resolved ticket's absolute path on the first
+line, followed by the complete ticket document.
+
 ## Development
 
 ```bash

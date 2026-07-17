@@ -5,6 +5,7 @@ import {
   type Project,
   type QueryResult,
   type SearchCriteria,
+  type ShownTicket,
   type Status,
   type Tracker,
 } from '../tracker/index.ts';
@@ -45,7 +46,7 @@ export async function showTicket(
   tracker: Tracker,
   project: string,
   reference: string
-): Promise<CommandOutcome<string>> {
+): Promise<CommandOutcome<ShownTicket>> {
   const validation = validateReference(reference);
   if (!validation.ok) return validation;
 

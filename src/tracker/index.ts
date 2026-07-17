@@ -69,6 +69,11 @@ export type {
   MutationOutcome,
 };
 
+export type ShownTicket = {
+  readonly path: string;
+  readonly document: string;
+};
+
 export { isAssigneeName, isNormalizedName, isTicketReference, parseTicketName };
 
 export type Tracker = {
@@ -105,7 +110,10 @@ export type Tracker = {
     ticketName: string,
     document: TrackerDocument
   ): Promise<Outcome<undefined>>;
-  showTicket(projectName: string, reference: string): Promise<Outcome<string>>;
+  showTicket(
+    projectName: string,
+    reference: string
+  ): Promise<Outcome<ShownTicket>>;
   listTickets(projectName: string, statusName: string): Promise<QueryResult>;
   searchTickets(
     projectName: string,
@@ -271,7 +279,13 @@ export function createTracker(workspaceRoot: string): Tracker {
         };
       }
       try {
-        return { ok: true, value: await readFile(matches[0].path, 'utf8') };
+        return {
+          ok: true,
+          value: {
+            path: matches[0].path,
+            document: await readFile(matches[0].path, 'utf8'),
+          },
+        };
       } catch (error) {
         return {
           ok: false,

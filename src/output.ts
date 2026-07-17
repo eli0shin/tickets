@@ -12,6 +12,7 @@ import type {
   Project,
   QueryResult,
   Status,
+  ShownTicket,
   MutationOutcome,
 } from './tracker/index.ts';
 
@@ -30,8 +31,8 @@ export function writeSuccess(value: string): void {
   writeStdout(`${value}\n`);
 }
 
-export function writeRaw(value: string): void {
-  writeStdout(value);
+export function writeShownTicket(ticket: ShownTicket): void {
+  writeStdout(`${ticket.path}\n${ticket.document}`);
 }
 
 export function writeDiagnostic(message: string): void {

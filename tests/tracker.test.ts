@@ -666,7 +666,13 @@ describe('tracker read-only queries', () => {
     });
     expect(
       await tracker.showTicket('alpha-project', 'beta-project/001-exact')
-    ).toEqual({ ok: true, value: source });
+    ).toEqual({
+      ok: true,
+      value: {
+        path: join(workspaceRoot, 'beta-project', 'done', '001-exact.md'),
+        document: source,
+      },
+    });
 
     await mkdir(join(workspaceRoot, 'beta-project', 'todo'));
     await writeFile(
