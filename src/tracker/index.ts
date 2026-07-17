@@ -80,7 +80,10 @@ export type Tracker = {
   readonly workspaceRoot: string;
   createProject(
     name: string,
-    options?: { readonly defaultStatus?: string }
+    options?: {
+      readonly defaultStatus?: string;
+      readonly gitRepo?: string;
+    }
   ): Promise<Outcome<Project>>;
   createStatus(projectName: string, name: string): Promise<Outcome<Status>>;
   createTicket(
@@ -171,7 +174,12 @@ export function createTracker(workspaceRoot: string): Tracker {
   return {
     workspaceRoot: absoluteRoot,
     createProject: (name, options) =>
-      createProject(absoluteRoot, name, options?.defaultStatus ?? 'todo'),
+      createProject(
+        absoluteRoot,
+        name,
+        options?.defaultStatus ?? 'todo',
+        options?.gitRepo
+      ),
     createStatus: (projectName, name) =>
       createStatus(absoluteRoot, projectName, name),
     createTicket: (projectName, input) =>

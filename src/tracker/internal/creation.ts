@@ -1,9 +1,14 @@
-import { mkdir, rmdir } from 'node:fs/promises';
+import { mkdir, rmdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
+import { normalizeRemote } from '../../git.ts';
 import type { DocumentDiagnostic, Outcome } from './documents.ts';
 import { readTrackerDocument, writeNewTrackerDocument } from './documents.ts';
 import type { Project, Status, Ticket } from './discovery.ts';
-import { discoverStatuses, discoverTickets } from './discovery.ts';
+import {
+  discoverProjects,
+  discoverStatuses,
+  discoverTickets,
+} from './discovery.ts';
 import {
   isAssigneeName,
   isNormalizedName,
@@ -23,7 +28,8 @@ export type CreateTicketInput = {
 export async function createProject(
   workspaceRoot: string,
   name: string,
-  defaultStatus: string
+  defaultStatus: string,
+  gitRepo?: string
 ): Promise<Outcome<Project>> {
   if (!isNormalizedName(name))
     return invalidName(workspaceRoot, 'project', name);
@@ -32,9 +38,40 @@ export async function createProject(
   }
 
   const project = { name, path: join(workspaceRoot, name) } satisfies Project;
+  const normalizedRepository =
+    gitRepo === undefined ? undefined : normalizeRemote(gitRepo);
+  if (gitRepo !== undefined && normalizedRepository === undefined) {
+    return {
+      ok: false,
+      diagnostic: {
+        path: project.path,
+        code: 'invalid-git-repo',
+        message: 'Git-Repo is not a supported remote',
+      },
+    };
+  }
+
   const createdDirectories: string[] = [];
   try {
     await mkdir(workspaceRoot, { recursive: true });
+    if (normalizedRepository !== undefined) {
+      const duplicate = await findProjectWithRepository(
+        workspaceRoot,
+        name,
+        normalizedRepository
+      );
+      if (!duplicate.ok) return duplicate;
+      if (duplicate.value !== undefined) {
+        return {
+          ok: false,
+          diagnostic: {
+            path: project.path,
+            code: 'duplicate-git-repo',
+            message: `Git repository is already associated with project: ${duplicate.value}`,
+          },
+        };
+      }
+    }
     await mkdir(project.path);
     createdDirectories.push(project.path);
 
@@ -46,7 +83,10 @@ export async function createProject(
 
     const projectDocumentPath = join(project.path, 'project.md');
     const write = await writeNewTrackerDocument(projectDocumentPath, {
-      metadata: { 'Default-Status': defaultStatus, 'Git-Repo': null },
+      metadata: {
+        'Default-Status': defaultStatus,
+        'Git-Repo': gitRepo ?? null,
+      },
       body: '',
     });
     if (!write.ok) {
@@ -61,6 +101,41 @@ export async function createProject(
       ? resourceExists(project.path)
       : filesystemFailure(project.path, error);
   }
+}
+
+async function findProjectWithRepository(
+  workspaceRoot: string,
+  projectName: string,
+  repository: string
+): Promise<Outcome<string | undefined>> {
+  const projects = await discoverProjects(workspaceRoot);
+  const discoveryFailure = projects.diagnostics.at(0);
+  if (discoveryFailure !== undefined) {
+    return { ok: false, diagnostic: discoveryFailure };
+  }
+  for (const project of projects.entries) {
+    if (project.name === projectName) continue;
+    const metadataPath = join(project.path, 'project.md');
+    try {
+      if (!(await stat(metadataPath)).isFile()) continue;
+    } catch (error) {
+      if (hasErrorCode(error, 'ENOENT')) continue;
+      return filesystemFailure(metadataPath, error);
+    }
+    const document = await readTrackerDocument(metadataPath, 'project');
+    if (!document.ok) {
+      if (document.diagnostic.code === 'filesystem-error') return document;
+      continue;
+    }
+    const candidate = document.value.metadata['Git-Repo'];
+    if (
+      typeof candidate === 'string' &&
+      normalizeRemote(candidate) === repository
+    ) {
+      return { ok: true, value: project.name };
+    }
+  }
+  return { ok: true, value: undefined };
 }
 
 async function cleanUpFailedProjectCreation(

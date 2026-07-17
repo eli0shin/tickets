@@ -696,6 +696,7 @@ describe('tracker resource creation', () => {
     const defaultProject = await tracker.createProject('default-project');
     const customProject = await tracker.createProject('custom-project', {
       defaultStatus: 'backlog',
+      gitRepo: 'git@example.com:owner/custom.git',
     });
     expect(defaultProject).toEqual({
       ok: true,
@@ -718,10 +719,69 @@ describe('tracker resource creation', () => {
     expect(await tracker.readProject('custom-project')).toEqual({
       ok: true,
       value: {
-        metadata: { 'Default-Status': 'backlog', 'Git-Repo': null },
+        metadata: {
+          'Default-Status': 'backlog',
+          'Git-Repo': 'git@example.com:owner/custom.git',
+        },
         body: '',
       },
     });
+  });
+
+  test('rejects duplicate repository associations without partial project state', async () => {
+    const workspaceRoot = await temporaryWorkspace();
+    const tracker = createTracker(workspaceRoot);
+    await tracker.createProject('existing-project', {
+      gitRepo: 'https://example.com/Owner/Repo.git',
+    });
+
+    const duplicate = await tracker.createProject('duplicate-project', {
+      gitRepo: 'git@example.com:owner/repo.git',
+    });
+
+    expect(duplicate).toEqual({
+      ok: false,
+      diagnostic: {
+        path: join(workspaceRoot, 'duplicate-project'),
+        code: 'duplicate-git-repo',
+        message:
+          'Git repository is already associated with project: existing-project',
+      },
+    });
+    expect(await readdir(workspaceRoot)).toEqual(['existing-project']);
+
+    const invalid = await tracker.createProject('invalid-project', {
+      gitRepo: '/local/repository',
+    });
+    expect(invalid).toEqual({
+      ok: false,
+      diagnostic: {
+        path: join(workspaceRoot, 'invalid-project'),
+        code: 'invalid-git-repo',
+        message: 'Git-Repo is not a supported remote',
+      },
+    });
+    expect(await readdir(workspaceRoot)).toEqual(['existing-project']);
+  });
+
+  test('ignores projects without metadata files when checking repository associations', async () => {
+    const workspaceRoot = await temporaryWorkspace();
+    await mkdir(join(workspaceRoot, 'missing-metadata'));
+    await mkdir(join(workspaceRoot, 'non-file-metadata', 'project.md'), {
+      recursive: true,
+    });
+    const tracker = createTracker(workspaceRoot);
+
+    const created = await tracker.createProject('valid-project', {
+      gitRepo: 'https://example.com/owner/repo.git',
+    });
+
+    expect(created.ok).toBe(true);
+    expect((await readdir(workspaceRoot)).sort()).toEqual([
+      'missing-metadata',
+      'non-file-metadata',
+      'valid-project',
+    ]);
   });
 
   test('deduplicates built-in project statuses and refuses invalid names and collisions', async () => {

@@ -10,9 +10,10 @@ import type {
 export function createProject(
   tracker: Tracker,
   name: string,
-  defaultStatus: string | undefined
+  defaultStatus: string | undefined,
+  gitRepo: string | undefined
 ): Promise<Outcome<Project>> {
-  return tracker.createProject(name, { defaultStatus });
+  return tracker.createProject(name, { defaultStatus, gitRepo });
 }
 
 export function createStatus(

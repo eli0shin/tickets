@@ -12,6 +12,10 @@ _Avoid_: Global state, store
 A named scope containing related tickets and a project-defined set of statuses.
 _Avoid_: Board, repository
 
+**Repository association**:
+An optional relationship between a project and a Git repository, identified by the repository's `origin` fetch remote. A project created outside a Git worktree, without `origin`, or with an unsupported remote has no repository association.
+_Avoid_: Current remote, project repository
+
 **Ticket**:
 A self-contained record of a unit of planned work within one project. Its project-unique name begins with a sequential number of at least three digits and includes a human-readable description, such as `001-add-blocking`.
 _Avoid_: Issue, card, task

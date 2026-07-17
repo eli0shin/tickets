@@ -7,8 +7,8 @@ export type ProjectRepository = {
   gitRepo?: string | null;
 };
 
-export type ProjectSelection =
-  | { ok: true; project: string }
+export type GitOriginInspection =
+  | { ok: true; origin: string }
   | { ok: false; reason: 'not-a-worktree' | 'missing-origin' }
   | {
       ok: false;
@@ -16,7 +16,11 @@ export type ProjectSelection =
       operation: 'inspect-worktree' | 'read-origin';
       detail: string;
     }
-  | { ok: false; reason: 'invalid-origin' }
+  | { ok: false; reason: 'invalid-origin' };
+
+export type ProjectSelection =
+  | { ok: true; project: string }
+  | Exclude<GitOriginInspection, { ok: true }>
   | { ok: false; reason: 'no-match'; origin: string }
   | {
       ok: false;
@@ -66,18 +70,11 @@ export function normalizeRemote(remote: string): string | undefined {
   });
 }
 
-/** Select an explicit project or discover one from the containing worktree's origin. */
-export async function selectProject(
-  options: SelectProjectOptions
-): Promise<ProjectSelection> {
-  if (options.explicitProject !== undefined) {
-    return { ok: true, project: options.explicitProject };
-  }
-
-  const worktree = await runGit(options.cwd, [
-    'rev-parse',
-    '--is-inside-work-tree',
-  ]);
+/** Inspect the containing worktree's origin fetch URL. */
+export async function inspectGitOrigin(
+  cwd: string
+): Promise<GitOriginInspection> {
+  const worktree = await runGit(cwd, ['rev-parse', '--is-inside-work-tree']);
   if (!worktree.ok) {
     return worktree.stderr.includes('not a git repository')
       ? { ok: false, reason: 'not-a-worktree' }
@@ -92,11 +89,7 @@ export async function selectProject(
     return { ok: false, reason: 'not-a-worktree' };
   }
 
-  const originResult = await runGit(options.cwd, [
-    'remote',
-    'get-url',
-    'origin',
-  ]);
+  const originResult = await runGit(cwd, ['remote', 'get-url', 'origin']);
   if (!originResult.ok) {
     return originResult.stderr.includes("No such remote 'origin'")
       ? { ok: false, reason: 'missing-origin' }
@@ -108,10 +101,24 @@ export async function selectProject(
         };
   }
 
-  const normalizedOrigin = normalizeRemote(originResult.stdout);
-  if (!normalizedOrigin) {
+  if (!normalizeRemote(originResult.stdout)) {
     return { ok: false, reason: 'invalid-origin' };
   }
+  return { ok: true, origin: originResult.stdout };
+}
+
+/** Select an explicit project or discover one from the containing worktree's origin. */
+export async function selectProject(
+  options: SelectProjectOptions
+): Promise<ProjectSelection> {
+  if (options.explicitProject !== undefined) {
+    return { ok: true, project: options.explicitProject };
+  }
+
+  const inspection = await inspectGitOrigin(options.cwd);
+  if (!inspection.ok) return inspection;
+  const normalizedOrigin = normalizeRemote(inspection.origin);
+  if (!normalizedOrigin) return { ok: false, reason: 'invalid-origin' };
 
   const matches = (await options.loadProjects())
     .filter(
