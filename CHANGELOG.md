@@ -1,5 +1,11 @@
 # tickets
 
+## 0.4.0
+
+### Minor Changes
+
+- [#30](https://github.com/eli0shin/tickets/pull/30) [`4757872`](https://github.com/eli0shin/tickets/commit/4757872a4b5a4e50ae0aabe691568cdb55ee7b32) Thanks [@eli0shin](https://github.com/eli0shin)! - Automatically associate projects created in Git worktrees with their origin remote.
+
 ## 0.3.0
 
 ### Minor Changes
