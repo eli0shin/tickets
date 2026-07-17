@@ -764,6 +764,26 @@ describe('tracker resource creation', () => {
     expect(await readdir(workspaceRoot)).toEqual(['existing-project']);
   });
 
+  test('ignores projects without metadata files when checking repository associations', async () => {
+    const workspaceRoot = await temporaryWorkspace();
+    await mkdir(join(workspaceRoot, 'missing-metadata'));
+    await mkdir(join(workspaceRoot, 'non-file-metadata', 'project.md'), {
+      recursive: true,
+    });
+    const tracker = createTracker(workspaceRoot);
+
+    const created = await tracker.createProject('valid-project', {
+      gitRepo: 'https://example.com/owner/repo.git',
+    });
+
+    expect(created.ok).toBe(true);
+    expect((await readdir(workspaceRoot)).sort()).toEqual([
+      'missing-metadata',
+      'non-file-metadata',
+      'valid-project',
+    ]);
+  });
+
   test('deduplicates built-in project statuses and refuses invalid names and collisions', async () => {
     const workspaceRoot = await temporaryWorkspace();
     const tracker = createTracker(workspaceRoot);

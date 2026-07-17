@@ -1,4 +1,4 @@
-import { mkdir, rmdir } from 'node:fs/promises';
+import { mkdir, rmdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { normalizeRemote } from '../../git.ts';
 import type { DocumentDiagnostic, Outcome } from './documents.ts';
@@ -115,10 +115,14 @@ async function findProjectWithRepository(
   }
   for (const project of projects.entries) {
     if (project.name === projectName) continue;
-    const document = await readTrackerDocument(
-      join(project.path, 'project.md'),
-      'project'
-    );
+    const metadataPath = join(project.path, 'project.md');
+    try {
+      if (!(await stat(metadataPath)).isFile()) continue;
+    } catch (error) {
+      if (hasErrorCode(error, 'ENOENT')) continue;
+      return filesystemFailure(metadataPath, error);
+    }
+    const document = await readTrackerDocument(metadataPath, 'project');
     if (!document.ok) {
       if (document.diagnostic.code === 'filesystem-error') return document;
       continue;
