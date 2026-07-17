@@ -1,5 +1,21 @@
 # tickets
 
+## 0.3.0
+
+### Minor Changes
+
+- [#24](https://github.com/eli0shin/tickets/pull/24) [`bbc914c`](https://github.com/eli0shin/tickets/commit/bbc914c79102ea3f6e5bb883f930066a63b9709b) Thanks [@eli0shin](https://github.com/eli0shin)! - Add explicit native self-updates plus the complete automatic update lifecycle with persisted checks, silent installation, notifications, configurable intervals, and opt-out behavior.
+
+### Patch Changes
+
+- [#29](https://github.com/eli0shin/tickets/pull/29) [`5326c3d`](https://github.com/eli0shin/tickets/commit/5326c3df205450c9ab25ad9621ed8dc78f962ed8) Thanks [@eli0shin](https://github.com/eli0shin)! - Print the resolved absolute ticket path before the complete document in `tickets show` output.
+
+- [#26](https://github.com/eli0shin/tickets/pull/26) [`8fa54e7`](https://github.com/eli0shin/tickets/commit/8fa54e7f76d55094f028ed39852c8c40a9a4bcba) Thanks [@eli0shin](https://github.com/eli0shin)! - Scope status-filtered searches before parsing tickets and treat repeated status filters as a union.
+
+- [#27](https://github.com/eli0shin/tickets/pull/27) [`883c86d`](https://github.com/eli0shin/tickets/commit/883c86d7f81720c225b65eff758e786a9d4c6763) Thanks [@eli0shin](https://github.com/eli0shin)! - Accept and exactly preserve human assignee names in ticket creation, search, and lint.
+
+- [#25](https://github.com/eli0shin/tickets/pull/25) [`7a44647`](https://github.com/eli0shin/tickets/commit/7a4464784874a6a598e66874031008aac58c7aa5) Thanks [@eli0shin](https://github.com/eli0shin)! - Accept human-readable ticket descriptions in create and rename commands by normalizing them to deterministic lowercase kebab-case filenames.
+
 ## 0.2.0
 
 ### Minor Changes
