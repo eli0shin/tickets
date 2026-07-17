@@ -25,7 +25,7 @@ Use the Tickets CLI and its local filesystem workspace to manage ticket work pre
 
 ## Resolve and inspect
 
-Use the Tickets CLI to discover the selected project, then use \`tickets list\`, \`tickets search\`, and \`tickets show\` to inspect the relevant work. Consult \`tickets --help\` or command-specific help when you need command syntax. Do not proceed until you know the exact project and tickets you will operate on.
+Use the Tickets CLI to discover the selected project, then use \`tickets list\`, \`tickets search\`, and \`tickets show\` to inspect the relevant work. The first line from \`tickets show\` is the resolved ticket's absolute path, followed by its complete document. Consult \`tickets --help\` or command-specific help when you need command syntax. Do not proceed until you know the exact project and tickets you will operate on.
 
 ## Mutate through the narrowest interface
 

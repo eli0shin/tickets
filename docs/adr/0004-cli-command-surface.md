@@ -67,7 +67,7 @@ tickets search
 
 Creation uses the project's `Default-Status` unless `--status` overrides it. Create and rename accept human-readable descriptions and normalize them deterministically to the lowercase kebab-case on-disk description defined by the filesystem contract. They reject descriptions only when normalization cannot produce that on-disk form. Creation writes the standard front matter with supplied metadata and an empty Markdown body.
 
-`show` prints the complete ticket file unchanged. There is no editor-launching command.
+`show` prints the resolved ticket's absolute path on the first line, followed by the complete ticket file unchanged. There is no editor-launching command.
 
 `done` is exact shorthand for moving to `done`; both routes invoke the same completion operation. Rename, move, and completion provide the cleanup behavior defined by the reference and integrity contract. There is no delete command, generic metadata editor, or post-creation command for assignment, tags, parents, or blockers; users edit those values directly in the ticket file.
 
@@ -86,7 +86,7 @@ Lint operates on the selected project. Skill installation behavior is specified 
 
 Successful creation and mutation commands print only the absolute path of the created or resulting resource. Rename and move print the ticket's new path. These commands do not support JSON.
 
-`show` emits raw Markdown and does not support JSON.
+`show` emits the resolved ticket's absolute path, a newline, and the raw Markdown document. It does not support JSON.
 
 Project and status listings are sorted by normalized name. Their plain text is headerless and tab-separated:
 

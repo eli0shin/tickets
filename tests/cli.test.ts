@@ -36,7 +36,7 @@ Options:
 Commands:
   project                           manage projects
   status                            manage statuses
-  show <reference>                  show a complete ticket document
+  show <reference>                  show a ticket path and complete document
   list [options] <status>           list tickets in one status
   search [options]                  search tickets using structured criteria
   create [options] <description>    create a ticket in the selected project
@@ -349,6 +349,48 @@ update Tickets CLI to latest version
 Options:
   -h, --help  display help for command
 `,
+      stderr: '',
+      exitCode: 0,
+    });
+  });
+
+  test('shows the absolute path before local and cross-project documents', async () => {
+    const workspace = await mkdtemp(join(temporaryDirectory, 'show-path-'));
+    const localPath = join(workspace, 'alpha-project', 'done', '001-local.md');
+    const crossProjectPath = join(
+      workspace,
+      'beta-project',
+      'in-progress',
+      '002-cross-project.md'
+    );
+    const localDocument = '---\nTags: []\n---\nLocal document\n';
+    const crossProjectDocument = '---\nTags: []\n---\nCross-project document\n';
+    await Promise.all([
+      mkdir(join(workspace, 'alpha-project', 'done'), { recursive: true }),
+      mkdir(join(workspace, 'beta-project', 'in-progress'), {
+        recursive: true,
+      }),
+    ]);
+    await Promise.all([
+      writeFile(localPath, localDocument),
+      writeFile(crossProjectPath, crossProjectDocument),
+    ]);
+    const command = [
+      ...getCommand(),
+      '--workspace',
+      workspace,
+      '--project',
+      'alpha-project',
+      'show',
+    ];
+
+    expect(await run([...command, '001-local'])).toEqual({
+      stdout: `${localPath}\n${localDocument}`,
+      stderr: '',
+      exitCode: 0,
+    });
+    expect(await run([...command, 'beta-project/002-cross-project'])).toEqual({
+      stdout: `${crossProjectPath}\n${crossProjectDocument}`,
       stderr: '',
       exitCode: 0,
     });
@@ -922,7 +964,7 @@ test('broken references fail only when followed and do not block unrelated opera
   });
 
   expect(await run([...alpha, 'show', '002-healthy'])).toEqual({
-    stdout: healthySource,
+    stdout: `${healthyPath}\n${healthySource}`,
     stderr: '',
     exitCode: 0,
   });
@@ -1042,7 +1084,7 @@ describe('read-only commands', () => {
       exitCode: 0,
     });
     expect(await run([...base, 'show', '001-selected'], { cwd })).toEqual({
-      stdout: ticketSource,
+      stdout: `${ticketPath}\n${ticketSource}`,
       stderr: '',
       exitCode: 0,
     });
@@ -1078,7 +1120,11 @@ describe('read-only commands', () => {
 
     expect(
       await run([...base, 'beta-project/001-cross-project'], { cwd })
-    ).toEqual({ stdout: source, stderr: '', exitCode: 0 });
+    ).toEqual({
+      stdout: `${ticketPath}\n${source}`,
+      stderr: '',
+      exitCode: 0,
+    });
     expect(await run([...base, 'BAD'], { cwd })).toEqual({
       stdout: '',
       stderr: 'Invalid ticket reference: BAD\n',
@@ -1191,7 +1237,7 @@ describe('read-only commands', () => {
     ];
 
     expect(await run([...base, 'show', '010-first'], { cwd })).toEqual({
-      stdout: firstSource,
+      stdout: `${firstPath}\n${firstSource}`,
       stderr: '',
       exitCode: 0,
     });
@@ -1842,7 +1888,7 @@ test('notify mode preserves JSON and raw stdout contracts', async () => {
         'show',
         '001-original',
       ],
-      ticketSource,
+      `${ticketPath}\n${ticketSource}`,
     ],
   ] as const) {
     expect(
