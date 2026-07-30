@@ -1,9 +1,13 @@
 import { readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import {
+  createEmbeddedProject,
   createProject,
   createStatus,
+  createStatusInProject,
   createTicket,
+  createTicketInProject,
+  validateProjectDocument,
   type CreateTicketInput,
 } from './internal/creation.ts';
 import {
@@ -27,6 +31,7 @@ import {
   isAssigneeName,
   isNormalizedName,
   isTicketReference,
+  normalizeName,
   parseTicketName,
   type ParsedTicketName,
 } from './internal/names.ts';
@@ -47,6 +52,7 @@ import {
   moveTicket,
   renameTicket,
   type MutationOutcome,
+  type MutationProjectCollection,
 } from './internal/mutations.ts';
 
 export type {
@@ -74,7 +80,14 @@ export type ShownTicket = {
   readonly document: string;
 };
 
-export { isAssigneeName, isNormalizedName, isTicketReference, parseTicketName };
+export {
+  createEmbeddedProject,
+  isAssigneeName,
+  isNormalizedName,
+  isTicketReference,
+  normalizeName,
+  parseTicketName,
+};
 
 export type Tracker = {
   readonly workspaceRoot: string;
@@ -97,6 +110,7 @@ export type Tracker = {
     statusName: string
   ): Promise<Discovery<Ticket>>;
   readProject(projectName: string): Promise<Outcome<TrackerDocument>>;
+  validateProject(projectName: string): Promise<Outcome<undefined>>;
   readTicket(
     projectName: string,
     statusName: string,
@@ -139,11 +153,43 @@ export type Tracker = {
 };
 
 export function createTracker(workspaceRoot: string): Tracker {
-  const absoluteRoot = resolve(workspaceRoot);
+  return createConfiguredTracker(resolve(workspaceRoot));
+}
 
+export function createEmbeddedTracker(
+  project: Project,
+  referenceWorkspaceRoot: string
+): Tracker {
+  return createConfiguredTracker(
+    resolve(project.path),
+    {
+      name: project.name,
+      path: resolve(project.path),
+    },
+    resolve(referenceWorkspaceRoot)
+  );
+}
+
+function createConfiguredTracker(
+  absoluteRoot: string,
+  embeddedProject?: Project,
+  referenceWorkspaceRoot = absoluteRoot
+): Tracker {
   function projectAt(name: string): Project {
-    return { name, path: join(absoluteRoot, name) };
+    return embeddedProject?.name === name
+      ? embeddedProject
+      : { name, path: join(absoluteRoot, name) };
   }
+
+  const mutationProjects = {
+    diagnosticPath: absoluteRoot,
+    qualifiedReferencesAreLocal: embeddedProject === undefined,
+    projectAt,
+    discoverProjects: () =>
+      embeddedProject === undefined
+        ? discoverProjects(absoluteRoot)
+        : Promise.resolve({ entries: [embeddedProject], diagnostics: [] }),
+  } satisfies MutationProjectCollection;
 
   function statusAt(projectName: string, name: string): Status {
     const project = projectAt(projectName);
@@ -167,7 +213,7 @@ export function createTracker(workspaceRoot: string): Tracker {
     ticketName: string
   ) =>
     readTrackerDocument(
-      join(absoluteRoot, projectName, statusName, `${ticketName}.md`),
+      join(projectAt(projectName).path, statusName, `${ticketName}.md`),
       'ticket'
     );
 
@@ -181,10 +227,17 @@ export function createTracker(workspaceRoot: string): Tracker {
         options?.gitRepo
       ),
     createStatus: (projectName, name) =>
-      createStatus(absoluteRoot, projectName, name),
+      embeddedProject?.name === projectName
+        ? createStatusInProject(embeddedProject, name)
+        : createStatus(absoluteRoot, projectName, name),
     createTicket: (projectName, input) =>
-      createTicket(absoluteRoot, projectName, input),
-    discoverProjects: () => discoverProjects(absoluteRoot),
+      embeddedProject?.name === projectName
+        ? createTicketInProject(embeddedProject, input)
+        : createTicket(absoluteRoot, projectName, input),
+    discoverProjects: () =>
+      embeddedProject === undefined
+        ? discoverProjects(absoluteRoot)
+        : Promise.resolve({ entries: [embeddedProject], diagnostics: [] }),
     discoverStatuses: (projectName) => {
       if (!isNormalizedName(projectName)) {
         return invalidDiscovery(absoluteRoot, 'project', projectName);
@@ -205,9 +258,22 @@ export function createTracker(workspaceRoot: string): Tracker {
         return invalidOutcome(absoluteRoot, 'project', projectName);
       }
       return readTrackerDocument(
-        join(absoluteRoot, projectName, 'project.md'),
+        join(projectAt(projectName).path, 'project.md'),
         'project'
       );
+    },
+    validateProject: async (projectName) => {
+      if (!isNormalizedName(projectName)) {
+        return invalidOutcome(absoluteRoot, 'project', projectName);
+      }
+      const project = projectAt(projectName);
+      const document = await readTrackerDocument(
+        join(project.path, 'project.md'),
+        'project'
+      );
+      if (!document.ok) return document;
+      const validation = await validateProjectDocument(project, document.value);
+      return validation.ok ? { ok: true, value: undefined } : validation;
     },
     readTicket: (projectName, statusName, ticketName) => {
       const ticket = validatedTicket(
@@ -227,14 +293,18 @@ export function createTracker(workspaceRoot: string): Tracker {
           diagnostic: invalidDiagnostic(absoluteRoot, 'project', projectName),
         });
       }
-      return lintProject(absoluteRoot, projectName);
+      return lintProject(
+        projectAt(projectName),
+        referenceWorkspaceRoot,
+        embeddedProject?.name === projectName
+      );
     },
     writeProject: (projectName, document) => {
       if (!isNormalizedName(projectName)) {
         return invalidOutcome(absoluteRoot, 'project', projectName);
       }
       return writeTrackerDocument(
-        join(absoluteRoot, projectName, 'project.md'),
+        join(projectAt(projectName).path, 'project.md'),
         document
       );
     },
@@ -370,11 +440,11 @@ export function createTracker(workspaceRoot: string): Tracker {
       );
     },
     renameTicket: (projectName, reference, description) =>
-      renameTicket(absoluteRoot, projectName, reference, description),
+      renameTicket(mutationProjects, projectName, reference, description),
     moveTicket: (projectName, reference, statusName) =>
-      moveTicket(absoluteRoot, projectName, reference, statusName),
+      moveTicket(mutationProjects, projectName, reference, statusName),
     completeTicket: (projectName, reference) =>
-      completeTicket(absoluteRoot, projectName, reference),
+      completeTicket(mutationProjects, projectName, reference),
   };
 }
 

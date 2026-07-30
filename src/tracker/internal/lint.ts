@@ -50,10 +50,12 @@ type TicketEntry = ProjectEntry & {
 };
 
 export async function lintProject(
-  workspaceRoot: string,
-  projectName: string
+  project: ProjectEntry,
+  referenceWorkspaceRoot: string,
+  embedded = false
 ): Promise<LintResult> {
-  const projectPath = join(workspaceRoot, projectName);
+  const projectName = project.name;
+  const projectPath = project.path;
   const projectEntries = await readDirectory(projectPath);
   if (!projectEntries.ok) return projectEntries;
 
@@ -174,11 +176,15 @@ export async function lintProject(
     }
   }
 
-  const workspaceTickets = await discoverWorkspaceTickets(workspaceRoot);
+  const workspaceTickets = await discoverWorkspaceTickets(
+    referenceWorkspaceRoot,
+    embedded
+  );
   if (!workspaceTickets.ok) return workspaceTickets;
   const ticketsByReference = indexTicketReferences(
     projectName,
-    workspaceTickets.tickets
+    workspaceTickets.tickets,
+    embedded ? tickets : undefined
   );
 
   for (const ticket of tickets) {
@@ -269,9 +275,9 @@ export async function lintProject(
     }
   }
 
-  if (selectedRepository !== null) {
+  if (selectedRepository !== null && !embedded) {
     const duplicates = await projectsWithRepository(
-      workspaceRoot,
+      referenceWorkspaceRoot,
       projectName,
       selectedRepository
     );
@@ -318,7 +324,10 @@ async function readDirectory(
   }
 }
 
-async function discoverWorkspaceTickets(workspaceRoot: string): Promise<
+async function discoverWorkspaceTickets(
+  workspaceRoot: string,
+  missingIsEmpty = false
+): Promise<
   | {
       readonly ok: true;
       readonly tickets: readonly (TicketEntry & {
@@ -327,6 +336,14 @@ async function discoverWorkspaceTickets(workspaceRoot: string): Promise<
     }
   | { readonly ok: false; readonly diagnostic: DocumentDiagnostic }
 > {
+  if (missingIsEmpty) {
+    try {
+      await stat(workspaceRoot);
+    } catch (error) {
+      if (isMissingFileError(error)) return { ok: true, tickets: [] };
+      return filesystemFailure(workspaceRoot, error);
+    }
+  }
   const projects = await readDirectory(workspaceRoot);
   if (!projects.ok) return projects;
   const tickets: (TicketEntry & { projectName: string })[] = [];
@@ -368,15 +385,22 @@ async function discoverWorkspaceTickets(workspaceRoot: string): Promise<
 
 function indexTicketReferences(
   selectedProject: string,
-  workspaceTickets: readonly (TicketEntry & { readonly projectName: string })[]
+  workspaceTickets: readonly (TicketEntry & { readonly projectName: string })[],
+  embeddedTickets?: readonly TicketEntry[]
 ): ReadonlyMap<string, number> {
   const counts = new Map<string, number>();
   for (const ticket of workspaceTickets) {
     const crossProject = `${ticket.projectName}/${ticket.name}`;
     counts.set(crossProject, (counts.get(crossProject) ?? 0) + 1);
-    if (ticket.projectName === selectedProject) {
+    if (
+      embeddedTickets === undefined &&
+      ticket.projectName === selectedProject
+    ) {
       counts.set(ticket.name, (counts.get(ticket.name) ?? 0) + 1);
     }
+  }
+  for (const ticket of embeddedTickets ?? []) {
+    counts.set(ticket.name, (counts.get(ticket.name) ?? 0) + 1);
   }
   return counts;
 }

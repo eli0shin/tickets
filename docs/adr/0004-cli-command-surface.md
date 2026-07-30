@@ -24,11 +24,12 @@ Diagnostics are written only to stderr. A failure associated with one invocation
 ## Project commands
 
 ```text
+tickets init [--default-status <status>]
 tickets project create <name> [--default-status <status>]
 tickets project list [--json]
 ```
 
-Project creation writes `project.md` and creates `in-progress`, `done`, and the default status. The default status is `todo` unless overridden; an override replaces `todo` rather than adding another status. Project deletion, renaming, and metadata editing remain filesystem operations.
+`init` creates the Embedded Project described in [ADR-0008](./0008-embedded-projects.md). `project create` creates a Workspace Project. Both write `project.md` and create `in-progress`, `done`, and the default status. The default status is `todo` unless overridden; an override replaces `todo` rather than adding another status. Project deletion, renaming, and metadata editing remain filesystem operations.
 
 ## Status commands
 

@@ -5,12 +5,20 @@ Tickets is a personal, local system for organizing planned work across projects 
 ## Language
 
 **Workspace**:
-The complete collection of projects belonging to the user.
+The centrally managed collection of the user's Workspace Projects. It does not include Embedded Projects.
 _Avoid_: Global state, store
 
 **Project**:
 A named scope containing related tickets and a project-defined set of statuses.
 _Avoid_: Board, repository
+
+**Workspace Project**:
+A Project belonging to the user's central Workspace.
+_Avoid_: Global project, central project
+
+**Embedded Project**:
+A self-contained Project colocated with the work it organizes rather than belonging to the Workspace.
+_Avoid_: Local project
 
 **Repository association**:
 An optional relationship between a project and a Git repository, identified by the repository's `origin` fetch remote. A project created outside a Git worktree, without `origin`, or with an unsupported remote has no repository association.
@@ -21,7 +29,7 @@ A self-contained record of a unit of planned work within one project. Its projec
 _Avoid_: Issue, card, task
 
 **Ticket reference**:
-A ticket name when referring within its project, or a project name followed by a ticket name when referring across projects.
+A ticket name when referring within its project, or a Workspace Project name followed by a ticket name when referring across projects. Tickets in an Embedded Project are always referenced without a project prefix.
 _Avoid_: File path, opaque ID
 
 **Status**:

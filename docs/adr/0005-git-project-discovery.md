@@ -4,7 +4,7 @@ status: accepted
 
 # Discover projects by normalized Git origin
 
-Commands that need a selected project use an explicit `--project` when supplied. Otherwise they compare the current Git worktree's `origin` with project `Git-Repo` metadata. Discovery is host-agnostic and never guesses from directory names.
+Commands that need a selected project use explicit `--workspace` or `--project` selection when supplied, then Embedded Project containment discovery as specified in [ADR-0008](./0008-embedded-projects.md). Otherwise they compare the current Git worktree's `origin` with Workspace Project `Git-Repo` metadata. Git discovery is host-agnostic and never guesses from directory names.
 
 ## Discovery
 
