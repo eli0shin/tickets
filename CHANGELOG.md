@@ -1,5 +1,11 @@
 # tickets
 
+## 0.5.0
+
+### Minor Changes
+
+- [#32](https://github.com/eli0shin/tickets/pull/32) [`bedec9a`](https://github.com/eli0shin/tickets/commit/bedec9a58a46513d8070385b76e734a57a9a6360) Thanks [@eli0shin](https://github.com/eli0shin)! - Add Embedded Projects stored in a local `.tickets` directory, with ancestor discovery, Workspace-qualified references, linting, and project listing support.
+
 ## 0.4.0
 
 ### Minor Changes
