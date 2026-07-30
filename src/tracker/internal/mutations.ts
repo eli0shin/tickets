@@ -7,11 +7,7 @@ import {
   writeTrackerDocument,
 } from './documents.ts';
 import type { Project, Status, Ticket } from './discovery.ts';
-import {
-  discoverProjects,
-  discoverStatuses,
-  discoverTickets,
-} from './discovery.ts';
+import { discoverStatuses, discoverTickets } from './discovery.ts';
 import {
   isNormalizedName,
   isTicketReference,
@@ -25,6 +21,16 @@ export type MutationOutcome =
       readonly diagnostics: readonly DocumentDiagnostic[];
       readonly partial: boolean;
     };
+
+export type MutationProjectCollection = {
+  readonly diagnosticPath: string;
+  readonly qualifiedReferencesAreLocal: boolean;
+  projectAt(name: string): Project;
+  discoverProjects(): Promise<{
+    readonly entries: readonly Project[];
+    readonly diagnostics: readonly DocumentDiagnostic[];
+  }>;
+};
 
 type ResolvedReference = {
   readonly projectName: string;
@@ -44,7 +50,7 @@ type ReferenceChange =
     };
 
 export async function renameTicket(
-  workspaceRoot: string,
+  projects: MutationProjectCollection,
   selectedProject: string,
   reference: string,
   description: string
@@ -53,15 +59,19 @@ export async function renameTicket(
   if (normalizedDescription === null) {
     return failed(
       invalid(
-        workspaceRoot,
+        projects.diagnosticPath,
         'invalid-name',
         `Invalid ticket description name: ${description}`
       )
     );
   }
-  const resolved = resolveReference(workspaceRoot, selectedProject, reference);
+  const resolved = resolveReference(
+    projects.diagnosticPath,
+    selectedProject,
+    reference
+  );
   if (!resolved.ok) return failed(resolved.diagnostic);
-  const target = await findTicket(workspaceRoot, resolved.value, reference);
+  const target = await findTicket(projects, resolved.value, reference);
   if (!target.ok) return failed(target.diagnostic);
 
   const idText = target.value.name.slice(0, target.value.name.indexOf('-'));
@@ -83,7 +93,7 @@ export async function renameTicket(
     description: normalizedDescription,
     path: destination,
   } satisfies Ticket;
-  const diagnostics = await cleanReferences(workspaceRoot, {
+  const diagnostics = await cleanReferences(projects, {
     kind: 'rename',
     oldReference: resolved.value,
     newTicketName: newName,
@@ -94,7 +104,7 @@ export async function renameTicket(
 }
 
 export async function moveTicket(
-  workspaceRoot: string,
+  projects: MutationProjectCollection,
   selectedProject: string,
   reference: string,
   statusName: string
@@ -102,19 +112,23 @@ export async function moveTicket(
   if (!isNormalizedName(statusName)) {
     return failed(
       invalid(
-        workspaceRoot,
+        projects.diagnosticPath,
         'invalid-name',
         `Invalid status name: ${statusName}`
       )
     );
   }
   if (statusName === 'done') {
-    return completeTicket(workspaceRoot, selectedProject, reference);
+    return completeTicket(projects, selectedProject, reference);
   }
 
-  const resolved = resolveReference(workspaceRoot, selectedProject, reference);
+  const resolved = resolveReference(
+    projects.diagnosticPath,
+    selectedProject,
+    reference
+  );
   if (!resolved.ok) return failed(resolved.diagnostic);
-  const target = await findTicket(workspaceRoot, resolved.value, reference);
+  const target = await findTicket(projects, resolved.value, reference);
   if (!target.ok) return failed(target.diagnostic);
   const status = await findStatus(target.value.status.project, statusName);
   if (!status.ok) return failed(status.diagnostic);
@@ -135,13 +149,17 @@ export async function moveTicket(
 }
 
 export async function completeTicket(
-  workspaceRoot: string,
+  projects: MutationProjectCollection,
   selectedProject: string,
   reference: string
 ): Promise<MutationOutcome> {
-  const resolved = resolveReference(workspaceRoot, selectedProject, reference);
+  const resolved = resolveReference(
+    projects.diagnosticPath,
+    selectedProject,
+    reference
+  );
   if (!resolved.ok) return failed(resolved.diagnostic);
-  const target = await findTicket(workspaceRoot, resolved.value, reference);
+  const target = await findTicket(projects, resolved.value, reference);
   if (!target.ok) return failed(target.diagnostic);
 
   const donePath = join(target.value.status.project.path, 'done');
@@ -162,7 +180,7 @@ export async function completeTicket(
     completed = { ...target.value, path: destination, status: done };
   }
 
-  const diagnostics = await cleanReferences(workspaceRoot, {
+  const diagnostics = await cleanReferences(projects, {
     kind: 'complete',
     reference: resolved.value,
     completedPath: completed.path,
@@ -258,14 +276,11 @@ async function findStatus(
 }
 
 async function findTicket(
-  workspaceRoot: string,
+  projects: MutationProjectCollection,
   reference: ResolvedReference,
   originalReference: string
 ): Promise<Outcome<Ticket>> {
-  const project = {
-    name: reference.projectName,
-    path: join(workspaceRoot, reference.projectName),
-  } satisfies Project;
+  const project = projects.projectAt(reference.projectName);
   const statuses = await discoverStatuses(project);
   const statusFailure = statuses.diagnostics.at(0);
   if (statusFailure !== undefined)
@@ -296,11 +311,11 @@ async function findTicket(
 }
 
 async function cleanReferences(
-  workspaceRoot: string,
+  collection: MutationProjectCollection,
   change: ReferenceChange
 ): Promise<DocumentDiagnostic[]> {
   const diagnostics: DocumentDiagnostic[] = [];
-  const projects = await discoverProjects(workspaceRoot);
+  const projects = await collection.discoverProjects();
   diagnostics.push(...projects.diagnostics);
   for (const project of projects.entries) {
     const statuses = await discoverStatuses(project);
@@ -315,7 +330,11 @@ async function cleanReferences(
         ) {
           continue;
         }
-        const result = await updateReferences(ticket, change);
+        const result = await updateReferences(
+          ticket,
+          change,
+          collection.qualifiedReferencesAreLocal
+        );
         if (!result.ok) diagnostics.push(result.diagnostic);
       }
     }
@@ -325,7 +344,8 @@ async function cleanReferences(
 
 async function updateReferences(
   ticket: Ticket,
-  change: ReferenceChange
+  change: ReferenceChange,
+  qualifiedReferencesAreLocal: boolean
 ): Promise<Outcome<undefined>> {
   const document = await readTrackerDocument(ticket.path, 'ticket');
   if (!document.ok) return document;
@@ -340,13 +360,23 @@ async function updateReferences(
     const rewrittenParent =
       parent.value === null
         ? null
-        : rewriteReference(parent.value, ticket.status.project.name, change);
+        : rewriteReference(
+            parent.value,
+            ticket.status.project.name,
+            change,
+            qualifiedReferencesAreLocal
+          );
     if (rewrittenParent !== parent.value) {
       updates.set('Parent', rewrittenParent);
     }
 
     const rewrittenBlockers = blockers.value.map((reference) =>
-      rewriteReference(reference, ticket.status.project.name, change)
+      rewriteReference(
+        reference,
+        ticket.status.project.name,
+        change,
+        qualifiedReferencesAreLocal
+      )
     );
     if (!sameReferences(blockers.value, rewrittenBlockers)) {
       updates.set('Blocked-By', rewrittenBlockers);
@@ -357,7 +387,8 @@ async function updateReferences(
         !matchesReference(
           reference,
           ticket.status.project.name,
-          change.reference
+          change.reference,
+          qualifiedReferencesAreLocal
         )
     );
     if (!sameReferences(blockers.value, retained)) {
@@ -377,9 +408,17 @@ async function updateReferences(
 function rewriteReference(
   reference: string,
   containingProject: string,
-  change: Extract<ReferenceChange, { kind: 'rename' }>
+  change: Extract<ReferenceChange, { kind: 'rename' }>,
+  qualifiedReferencesAreLocal: boolean
 ): string {
-  if (!matchesReference(reference, containingProject, change.oldReference)) {
+  if (
+    !matchesReference(
+      reference,
+      containingProject,
+      change.oldReference,
+      qualifiedReferencesAreLocal
+    )
+  ) {
     return reference;
   }
   return reference.includes('/')
@@ -390,13 +429,15 @@ function rewriteReference(
 function matchesReference(
   reference: string,
   containingProject: string,
-  target: ResolvedReference
+  target: ResolvedReference,
+  qualifiedReferencesAreLocal: boolean
 ): boolean {
   const separator = reference.indexOf('/');
   return separator === -1
     ? containingProject === target.projectName &&
         reference === target.ticketName
-    : reference.slice(0, separator) === target.projectName &&
+    : qualifiedReferencesAreLocal &&
+        reference.slice(0, separator) === target.projectName &&
         reference.slice(separator + 1) === target.ticketName;
 }
 

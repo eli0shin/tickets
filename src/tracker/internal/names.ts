@@ -11,7 +11,7 @@ export function isNormalizedName(value: string): boolean {
   return value.length > 0 && NORMALIZED_NAME_PATTERN.test(value);
 }
 
-export function normalizeTicketDescription(value: string): string | null {
+export function normalizeName(value: string): string | null {
   if (isNormalizedName(value)) return value;
 
   const normalized = value
@@ -22,6 +22,8 @@ export function normalizeTicketDescription(value: string): string | null {
     .replace(/^-+|-+$/g, '');
   return normalized.length === 0 ? null : normalized;
 }
+
+export const normalizeTicketDescription = normalizeName;
 
 export function isAssigneeName(value: string): boolean;
 export function isAssigneeName(value: unknown): value is string;

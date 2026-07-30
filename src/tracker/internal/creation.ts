@@ -51,7 +51,6 @@ export async function createProject(
     };
   }
 
-  const createdDirectories: string[] = [];
   try {
     await mkdir(workspaceRoot, { recursive: true });
     if (normalizedRepository !== undefined) {
@@ -72,6 +71,36 @@ export async function createProject(
         };
       }
     }
+    return await createProjectDirectory(project, defaultStatus, gitRepo);
+  } catch (error) {
+    return filesystemFailure(project.path, error);
+  }
+}
+
+export async function createEmbeddedProject(
+  parentDirectory: string,
+  name: string,
+  defaultStatus: string
+): Promise<Outcome<Project>> {
+  const project = {
+    name,
+    path: join(parentDirectory, '.tickets'),
+  } satisfies Project;
+  if (!isNormalizedName(name))
+    return invalidName(project.path, 'project', name);
+  if (!isNormalizedName(defaultStatus)) {
+    return invalidName(project.path, 'status', defaultStatus);
+  }
+  return createProjectDirectory(project, defaultStatus);
+}
+
+async function createProjectDirectory(
+  project: Project,
+  defaultStatus: string,
+  gitRepo?: string
+): Promise<Outcome<Project>> {
+  const createdDirectories: string[] = [];
+  try {
     await mkdir(project.path);
     createdDirectories.push(project.path);
 
@@ -154,21 +183,26 @@ async function cleanUpFailedProjectCreation(
   return cleanupFailure ?? { ok: true, value: undefined };
 }
 
-export async function createStatus(
+export function createStatus(
   workspaceRoot: string,
   projectName: string,
   name: string
 ): Promise<Outcome<Status>> {
   if (!isNormalizedName(projectName)) {
-    return invalidName(workspaceRoot, 'project', projectName);
+    return Promise.resolve(invalidName(workspaceRoot, 'project', projectName));
   }
-  if (!isNormalizedName(name))
-    return invalidName(workspaceRoot, 'status', name);
+  return createStatusInProject(
+    { name: projectName, path: join(workspaceRoot, projectName) },
+    name
+  );
+}
 
-  const project = {
-    name: projectName,
-    path: join(workspaceRoot, projectName),
-  } satisfies Project;
+export async function createStatusInProject(
+  project: Project,
+  name: string
+): Promise<Outcome<Status>> {
+  if (!isNormalizedName(name)) return invalidName(project.path, 'status', name);
+
   const status = {
     name,
     path: join(project.path, name),
@@ -179,7 +213,7 @@ export async function createStatus(
     'project'
   );
   if (!projectDocument.ok) return projectDocument;
-  const projectValidation = await validateProject(
+  const projectValidation = await validateProjectDocument(
     project,
     projectDocument.value
   );
@@ -195,33 +229,44 @@ export async function createStatus(
   }
 }
 
-export async function createTicket(
+export function createTicket(
   workspaceRoot: string,
   projectName: string,
   input: CreateTicketInput
 ): Promise<Outcome<Ticket>> {
+  if (!isNormalizedName(projectName)) {
+    return Promise.resolve(invalidName(workspaceRoot, 'project', projectName));
+  }
+  return createTicketInProject(
+    { name: projectName, path: join(workspaceRoot, projectName) },
+    input,
+    workspaceRoot
+  );
+}
+
+export async function createTicketInProject(
+  project: Project,
+  input: CreateTicketInput,
+  diagnosticPath = project.path
+): Promise<Outcome<Ticket>> {
   const normalizedDescription = normalizeTicketDescription(input.description);
   if (normalizedDescription === null) {
-    return invalidName(workspaceRoot, 'ticket description', input.description);
+    return invalidName(diagnosticPath, 'ticket description', input.description);
   }
-  const validation = validateTicketInput(workspaceRoot, projectName, input);
+  const validation = validateTicketInput(diagnosticPath, project.name, input);
   if (!validation.ok) return validation;
   const normalizedInput = {
     ...input,
     description: normalizedDescription,
   } satisfies CreateTicketInput;
 
-  const project = {
-    name: projectName,
-    path: join(workspaceRoot, projectName),
-  } satisfies Project;
   const projectDocument = await readTrackerDocument(
     join(project.path, 'project.md'),
     'project'
   );
   if (!projectDocument.ok) return projectDocument;
 
-  const projectValidation = await validateProject(
+  const projectValidation = await validateProjectDocument(
     project,
     projectDocument.value
   );
@@ -231,10 +276,25 @@ export async function createTicket(
   return createAllocatedTicket(project, selectedStatus, normalizedInput);
 }
 
-async function validateProject(
+export async function validateProjectDocument(
   project: Project,
   document: { readonly metadata: Readonly<Record<string, unknown>> }
 ): Promise<Outcome<string>> {
+  const repository = document.metadata['Git-Repo'];
+  if (
+    repository !== undefined &&
+    repository !== null &&
+    repository !== '' &&
+    (typeof repository !== 'string' ||
+      normalizeRemote(repository) === undefined)
+  ) {
+    return failure(
+      join(project.path, 'project.md'),
+      'invalid-git-repo',
+      'Git-Repo is not a supported remote'
+    );
+  }
+
   const defaultStatus = document.metadata['Default-Status'];
   if (typeof defaultStatus !== 'string' || !isNormalizedName(defaultStatus)) {
     return failure(

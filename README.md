@@ -20,7 +20,8 @@ Run `tickets --help` for the complete command grammar.
 
 | Command                                                              | Description                                 |
 | -------------------------------------------------------------------- | ------------------------------------------- |
-| `tickets project ...`                                                | Create and list projects                    |
+| `tickets init`                                                       | Create an Embedded Project in `.tickets/`   |
+| `tickets project ...`                                                | Create and list Workspace Projects          |
 | `tickets status ...`                                                 | Create and list statuses                    |
 | `tickets create`, `show`, `list`, `search`, `rename`, `move`, `done` | Manage tickets                              |
 | `tickets lint`                                                       | Validate the selected project               |
@@ -60,6 +61,25 @@ Existing lowercase kebab-case descriptions are preserved exactly.
 
 `tickets show <reference>` prints the resolved ticket's absolute path on the first
 line, followed by the complete ticket document.
+
+## Embedded Projects
+
+Run `tickets init` in a directory to create a self-contained `.tickets/` Project
+beside the work it tracks. Add `--default-status <status>` to replace the default
+`todo` status. The directory is ordinary repository content; Tickets does not
+modify Git configuration or ignore files.
+
+From nested directories, Tickets uses the nearest ancestor `.tickets/`. Explicit
+`--workspace` or `--project` options take precedence; otherwise Embedded Project
+discovery happens before Git-origin discovery. The Embedded Project name is the
+normalized name of its parent directory. Without an explicit workspace,
+`tickets project list` shows the active Embedded Project first, followed by
+Workspace Projects.
+
+Embedded tickets always use unqualified references such as `001-review-notes`.
+Qualified references such as `platform/042-design` target Workspace Projects,
+but automatic rename and completion cleanup does not cross between the Embedded
+Project and Workspace.
 
 ## Development
 

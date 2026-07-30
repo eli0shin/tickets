@@ -4,7 +4,7 @@ status: accepted
 
 # Use the filesystem as the complete data model
 
-Tickets stores all durable state in directly editable Markdown files and directories under `~/.local/state/tickets`. This keeps the filesystem usable as the primary interface; the CLI scans and edits that state without hidden indexes, counters, caches, or databases. The trade-off is that manual edits can produce invalid data, which normal commands handle conservatively and `tickets lint` reports.
+Tickets stores Workspace Project state in directly editable Markdown files and directories under `~/.local/state/tickets`; Embedded Projects use the same Project layout at `.tickets/` as specified in [ADR-0008](./0008-embedded-projects.md). This keeps the filesystem usable as the primary interface; the CLI scans and edits that state without hidden indexes, counters, caches, or databases. The trade-off is that manual edits can produce invalid data, which normal commands handle conservatively and `tickets lint` reports.
 
 ## Contract
 

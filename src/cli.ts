@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import { Command } from '@commander-js/extra-typings';
+import { stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import {
   getConfigPath,
@@ -8,7 +9,8 @@ import {
   readConfig,
 } from './config.ts';
 import { handleAutoUpdate } from './auto-update.ts';
-import { join, resolve } from 'node:path';
+import { discoverEmbeddedProject } from './embedded.ts';
+import { basename, join, resolve } from 'node:path';
 import { version } from '../package.json';
 import {
   createProject,
@@ -59,10 +61,14 @@ import {
   writeUpdateOutcome,
 } from './output.ts';
 import {
+  createEmbeddedProject,
+  createEmbeddedTracker,
   createTracker,
   isNormalizedName,
   isTicketReference,
+  normalizeName,
   type DocumentDiagnostic,
+  type Project,
   type Tracker,
 } from './tracker/index.ts';
 import type { ConfirmOverwrite } from './skill.ts';
@@ -133,16 +139,70 @@ export function createProgram({
     )
     .option('--project <name>', 'select a project by name');
 
+  program
+    .command('init')
+    .description('initialize an Embedded Project in the current directory')
+    .option('--default-status <status>', 'default status (replaces todo)')
+    .action(async ({ defaultStatus }) => {
+      const parentDirectory = resolve(cwd);
+      const name = normalizeName(basename(parentDirectory));
+      if (name === null) {
+        return writeCommandFailure({
+          kind: 'message',
+          message: `Cannot derive a project name from directory: ${parentDirectory}`,
+        });
+      }
+      writeMutation(
+        await createEmbeddedProject(
+          parentDirectory,
+          name,
+          defaultStatus ?? 'todo'
+        )
+      );
+    });
+
   const project = program.command('project').description('manage projects');
   project
     .command('list')
     .description('list projects')
     .option('--json', 'emit JSON output')
     .action(async ({ json }) => {
-      const tracker = trackerFor(program.opts().workspace);
-      writeCommandOutcome(await listProjects(tracker), (projects) => {
-        writeProjectList(projects, Boolean(json));
-      });
+      const globals = program.opts();
+      let embeddedProject: Project | undefined;
+      if (globals.workspace === undefined) {
+        const embedded = await discoverEmbeddedProject(cwd);
+        if (!embedded.ok) {
+          return writeCommandFailure({
+            kind: 'diagnostic',
+            diagnostic: embedded.diagnostic,
+          });
+        }
+        embeddedProject = embedded.project;
+        if (embeddedProject !== undefined) {
+          const validation = await validateEmbeddedProject(
+            embeddedProject,
+            workspaceRootFor(undefined)
+          );
+          if (!validation.ok) return writeCommandFailure(validation.failure);
+        }
+      }
+
+      const workspaceRoot = workspaceRootFor(globals.workspace);
+      if (
+        embeddedProject !== undefined &&
+        (await pathIsMissing(workspaceRoot))
+      ) {
+        return writeProjectList([embeddedProject], Boolean(json));
+      }
+
+      const projects = await listProjects(createTracker(workspaceRoot));
+      if (!projects.ok) return writeCommandFailure(projects.failure);
+      writeProjectList(
+        embeddedProject === undefined
+          ? projects.value
+          : [embeddedProject, ...projects.value],
+        Boolean(json)
+      );
     });
   project
     .command('create')
@@ -409,7 +469,13 @@ export function createProgram({
     .description('validate the selected project')
     .option('--json', 'emit JSON output')
     .action(async ({ json }) => {
-      const selected = await selectedTracker(program, cwd, select);
+      const selected = await selectedTracker(
+        program,
+        cwd,
+        select,
+        false,
+        false
+      );
       if (!selected.ok) return writeCommandFailure(selected.failure);
       writeLintOutcome(
         selected.value.project,
@@ -452,16 +518,43 @@ async function selectedTracker(
   program: RootCommand,
   cwd: string,
   select: SelectProjectForCli,
-  validateExplicit = false
+  validateExplicit = false,
+  validateEmbeddedMetadata = true
 ): Promise<
   CommandOutcome<{ readonly tracker: Tracker; readonly project: string }>
 > {
   const globals = program.opts();
-  const tracker = trackerFor(globals.workspace);
   if (validateExplicit) {
     const validation = validateProject(globals.project);
     if (!validation.ok) return validation;
   }
+
+  if (globals.workspace === undefined && globals.project === undefined) {
+    const embedded = await discoverEmbeddedProject(cwd);
+    if (!embedded.ok) {
+      return {
+        ok: false,
+        failure: { kind: 'diagnostic', diagnostic: embedded.diagnostic },
+      };
+    }
+    if (embedded.project !== undefined) {
+      const referenceWorkspaceRoot = workspaceRootFor(undefined);
+      if (validateEmbeddedMetadata) {
+        const validation = await validateEmbeddedProject(
+          embedded.project,
+          referenceWorkspaceRoot
+        );
+        if (!validation.ok) return validation;
+        return successfulSelection(validation.value, embedded.project.name);
+      }
+      return successfulSelection(
+        createEmbeddedTracker(embedded.project, referenceWorkspaceRoot),
+        embedded.project.name
+      );
+    }
+  }
+
+  const tracker = trackerFor(globals.workspace);
   const selected = await selectedProject(tracker, cwd, globals.project, select);
   return selected.ok ? successfulSelection(tracker, selected.value) : selected;
 }
@@ -555,9 +648,34 @@ function validMutationReference(reference: string): boolean {
 }
 
 function trackerFor(workspace: string | undefined): Tracker {
-  return createTracker(
-    resolve(workspace ?? join(homedir(), '.local/state/tickets'))
-  );
+  return createTracker(workspaceRootFor(workspace));
+}
+
+function workspaceRootFor(workspace: string | undefined): string {
+  return resolve(workspace ?? join(homedir(), '.local/state/tickets'));
+}
+
+async function validateEmbeddedProject(
+  project: Project,
+  referenceWorkspaceRoot: string
+): Promise<CommandOutcome<Tracker>> {
+  const tracker = createEmbeddedTracker(project, referenceWorkspaceRoot);
+  const validation = await tracker.validateProject(project.name);
+  return validation.ok
+    ? { ok: true, value: tracker }
+    : {
+        ok: false,
+        failure: { kind: 'diagnostic', diagnostic: validation.diagnostic },
+      };
+}
+
+async function pathIsMissing(path: string): Promise<boolean> {
+  try {
+    await stat(path);
+    return false;
+  } catch (error) {
+    return error instanceof Error && 'code' in error && error.code === 'ENOENT';
+  }
 }
 
 function collect(value: string, previous: string[]): string[] {

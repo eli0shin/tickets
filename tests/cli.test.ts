@@ -34,6 +34,8 @@ Options:
   -h, --help                        display help for command
 
 Commands:
+  init [options]                    initialize an Embedded Project in the
+                                    current directory
   project                           manage projects
   status                            manage statuses
   show <reference>                  show a ticket path and complete document
@@ -1396,6 +1398,547 @@ describe('read-only commands', () => {
 });
 
 describe('resource creation commands', () => {
+  test('initializes an Embedded Project in the current directory', async () => {
+    const root = join(temporaryDirectory, 'Large Research Project');
+    const projectPath = join(root, '.tickets');
+    await mkdir(root);
+
+    expect(
+      await run(['bun', resolve(repositoryRoot, 'src/cli.ts'), 'init'], {
+        cwd: root,
+      })
+    ).toEqual({ stdout: `${projectPath}\n`, stderr: '', exitCode: 0 });
+    expect((await readdir(projectPath)).sort()).toEqual([
+      'done',
+      'in-progress',
+      'project.md',
+      'todo',
+    ]);
+    expect(await readFile(join(projectPath, 'project.md'), 'utf8')).toBe(
+      '---\nDefault-Status: todo\nGit-Repo:\n---\n'
+    );
+  });
+
+  test('initializes an Embedded Project with a custom default status', async () => {
+    const root = join(temporaryDirectory, 'custom-embedded');
+    const projectPath = join(root, '.tickets');
+    await mkdir(root);
+
+    expect(
+      await run(
+        [
+          'bun',
+          resolve(repositoryRoot, 'src/cli.ts'),
+          'init',
+          '--default-status',
+          'backlog',
+        ],
+        { cwd: root }
+      )
+    ).toEqual({ stdout: `${projectPath}\n`, stderr: '', exitCode: 0 });
+    expect((await readdir(projectPath)).sort()).toEqual([
+      'backlog',
+      'done',
+      'in-progress',
+      'project.md',
+    ]);
+  });
+
+  test('does not overwrite an existing Embedded Project directory', async () => {
+    const root = join(temporaryDirectory, 'existing-embedded');
+    const projectPath = join(root, '.tickets');
+    const sentinel = join(projectPath, 'keep.txt');
+    await mkdir(projectPath, { recursive: true });
+    await writeFile(sentinel, 'keep');
+
+    const result = await run(
+      ['bun', resolve(repositoryRoot, 'src/cli.ts'), 'init'],
+      { cwd: root }
+    );
+    expect(result).toEqual({
+      stdout: '',
+      stderr: `Resource already exists: ${projectPath}\n`,
+      exitCode: 2,
+    });
+    expect(await readFile(sentinel, 'utf8')).toBe('keep');
+  });
+
+  test('selects the nearest ancestor Embedded Project before Git discovery', async () => {
+    const home = join(temporaryDirectory, 'embedded-selection-home');
+    const root = join(home, 'Research Notes');
+    const nested = join(root, 'documents', 'sources');
+    const projectPath = join(root, '.tickets');
+    const ticketPath = join(projectPath, 'todo', '001-review-sources.md');
+    await mkdir(nested, { recursive: true });
+    await run(['bun', resolve(repositoryRoot, 'src/cli.ts'), 'init'], {
+      cwd: root,
+      env: { HOME: home },
+    });
+
+    expect(
+      await run(
+        [
+          'bun',
+          resolve(repositoryRoot, 'src/cli.ts'),
+          'create',
+          'Review Sources',
+        ],
+        { cwd: nested, env: { HOME: home } }
+      )
+    ).toEqual({ stdout: `${ticketPath}\n`, stderr: '', exitCode: 0 });
+  });
+
+  test('reads Embedded tickets from nested directories', async () => {
+    const home = join(temporaryDirectory, 'embedded-read-home');
+    const root = join(home, 'research');
+    const nested = join(root, 'documents');
+    const ticketPath = join(root, '.tickets', 'todo', '001-review-notes.md');
+    const cli = ['bun', resolve(repositoryRoot, 'src/cli.ts')];
+    await mkdir(nested, { recursive: true });
+    await run([...cli, 'init'], { cwd: root, env: { HOME: home } });
+    await run([...cli, 'create', 'Review Notes'], {
+      cwd: root,
+      env: { HOME: home },
+    });
+    const document = await readFile(ticketPath, 'utf8');
+
+    expect(
+      await run([...cli, 'show', '001-review-notes'], {
+        cwd: nested,
+        env: { HOME: home },
+      })
+    ).toEqual({
+      stdout: `${ticketPath}\n${document}`,
+      stderr: '',
+      exitCode: 0,
+    });
+    expect(
+      await run([...cli, 'list', 'todo'], {
+        cwd: nested,
+        env: { HOME: home },
+      })
+    ).toEqual({
+      stdout: `todo\t001-review-notes\t${ticketPath}\n`,
+      stderr: '',
+      exitCode: 0,
+    });
+    expect(
+      await run([...cli, 'search', '--unblocked'], {
+        cwd: nested,
+        env: { HOME: home },
+      })
+    ).toEqual({
+      stdout: `todo\t001-review-notes\t${ticketPath}\n`,
+      stderr: '',
+      exitCode: 0,
+    });
+  });
+
+  test('selects a nested Embedded Project instead of its ancestor', async () => {
+    const home = join(temporaryDirectory, 'nested-embedded-home');
+    const outer = join(home, 'research');
+    const inner = join(outer, 'focused-study');
+    const nested = join(inner, 'documents');
+    const cli = ['bun', resolve(repositoryRoot, 'src/cli.ts')];
+    await mkdir(nested, { recursive: true });
+    await run([...cli, 'init'], { cwd: outer, env: { HOME: home } });
+    await run([...cli, 'init'], { cwd: inner, env: { HOME: home } });
+
+    const ticketPath = join(inner, '.tickets', 'todo', '001-inner-ticket.md');
+    expect(
+      await run([...cli, 'create', 'Inner Ticket'], {
+        cwd: nested,
+        env: { HOME: home },
+      })
+    ).toEqual({ stdout: `${ticketPath}\n`, stderr: '', exitCode: 0 });
+    expect(await readdir(join(outer, '.tickets', 'todo'))).toEqual([]);
+  });
+
+  test('gives explicit Workspace selection precedence over an Embedded Project', async () => {
+    const home = join(temporaryDirectory, 'embedded-override-home');
+    const root = join(home, 'research');
+    const workspace = join(home, 'workspace');
+    const workspaceProject = join(workspace, 'platform');
+    const workspaceTicket = join(
+      workspaceProject,
+      'todo',
+      '001-workspace-ticket.md'
+    );
+    const cli = ['bun', resolve(repositoryRoot, 'src/cli.ts')];
+    await mkdir(root, { recursive: true });
+    await run([...cli, 'init'], { cwd: root, env: { HOME: home } });
+    await run(
+      [...cli, '--workspace', workspace, 'project', 'create', 'platform'],
+      { cwd: root, env: { HOME: home } }
+    );
+
+    expect(
+      await run(
+        [
+          ...cli,
+          '--workspace',
+          workspace,
+          '--project',
+          'platform',
+          'create',
+          'Workspace Ticket',
+        ],
+        { cwd: root, env: { HOME: home } }
+      )
+    ).toEqual({ stdout: `${workspaceTicket}\n`, stderr: '', exitCode: 0 });
+    expect(await readdir(join(root, '.tickets', 'todo'))).toEqual([]);
+    expect(
+      await run([...cli, '--workspace', workspace, 'project', 'list'], {
+        cwd: root,
+        env: { HOME: home },
+      })
+    ).toEqual({
+      stdout: `platform\t${workspaceProject}\n`,
+      stderr: '',
+      exitCode: 0,
+    });
+  });
+
+  test('renames Embedded tickets and cleans only Embedded references', async () => {
+    const home = join(temporaryDirectory, 'embedded-mutation-home');
+    const root = join(home, 'research');
+    const cli = ['bun', resolve(repositoryRoot, 'src/cli.ts')];
+    await mkdir(root, { recursive: true });
+    await run([...cli, 'init'], { cwd: root, env: { HOME: home } });
+    await run([...cli, 'create', 'source'], {
+      cwd: root,
+      env: { HOME: home },
+    });
+    const dependentPath = join(root, '.tickets', 'todo', '002-dependent.md');
+    await run([...cli, 'create', 'dependent', '--blocked-by', '001-source'], {
+      cwd: root,
+      env: { HOME: home },
+    });
+
+    const renamedPath = join(root, '.tickets', 'todo', '001-renamed-source.md');
+    expect(
+      await run([...cli, 'rename', '001-source', 'Renamed Source'], {
+        cwd: root,
+        env: { HOME: home },
+      })
+    ).toEqual({ stdout: `${renamedPath}\n`, stderr: '', exitCode: 0 });
+    expect(await readFile(dependentPath, 'utf8')).toContain(
+      'Blocked-By:\n  - 001-renamed-source'
+    );
+  });
+
+  test('does not rewrite same-name qualified Workspace references during Embedded rename', async () => {
+    const home = join(temporaryDirectory, 'embedded-collision-rename-home');
+    const root = join(home, 'research');
+    const workspaceTicket = join(
+      home,
+      '.local',
+      'state',
+      'tickets',
+      'research',
+      'todo',
+      '001-shared-source.md'
+    );
+    const cli = ['bun', resolve(repositoryRoot, 'src/cli.ts')];
+    await Promise.all([
+      mkdir(root, { recursive: true }),
+      mkdir(resolve(workspaceTicket, '..'), { recursive: true }),
+    ]);
+    await writeFile(workspaceTicket, '---\nTags: []\n---\n');
+    await run([...cli, 'init'], { cwd: root, env: { HOME: home } });
+    await run([...cli, 'create', 'Shared Source'], {
+      cwd: root,
+      env: { HOME: home },
+    });
+    const dependent = await run(
+      [
+        ...cli,
+        'create',
+        'dependent',
+        '--blocked-by',
+        'research/001-shared-source',
+      ],
+      { cwd: root, env: { HOME: home } }
+    );
+
+    await run([...cli, 'rename', '001-shared-source', 'Renamed Local'], {
+      cwd: root,
+      env: { HOME: home },
+    });
+    expect(await readFile(dependent.stdout.trim(), 'utf8')).toContain(
+      'research/001-shared-source'
+    );
+  });
+
+  test('does not remove same-name qualified Workspace blockers during Embedded completion', async () => {
+    const home = join(temporaryDirectory, 'embedded-collision-complete-home');
+    const root = join(home, 'research');
+    const workspaceTicket = join(
+      home,
+      '.local',
+      'state',
+      'tickets',
+      'research',
+      'todo',
+      '001-shared-source.md'
+    );
+    const cli = ['bun', resolve(repositoryRoot, 'src/cli.ts')];
+    await Promise.all([
+      mkdir(root, { recursive: true }),
+      mkdir(resolve(workspaceTicket, '..'), { recursive: true }),
+    ]);
+    await writeFile(workspaceTicket, '---\nTags: []\n---\n');
+    await run([...cli, 'init'], { cwd: root, env: { HOME: home } });
+    await run([...cli, 'create', 'Shared Source'], {
+      cwd: root,
+      env: { HOME: home },
+    });
+    const dependent = await run(
+      [
+        ...cli,
+        'create',
+        'dependent',
+        '--blocked-by',
+        'research/001-shared-source',
+      ],
+      { cwd: root, env: { HOME: home } }
+    );
+
+    await run([...cli, 'done', '001-shared-source'], {
+      cwd: root,
+      env: { HOME: home },
+    });
+    expect(await readFile(dependent.stdout.trim(), 'utf8')).toContain(
+      'research/001-shared-source'
+    );
+  });
+
+  test('routes qualified mutations to the Workspace without cross-store cleanup', async () => {
+    const home = join(temporaryDirectory, 'embedded-qualified-mutation-home');
+    const root = join(home, 'research');
+    const workspaceProject = join(
+      home,
+      '.local',
+      'state',
+      'tickets',
+      'platform'
+    );
+    const workspaceTicket = join(
+      workspaceProject,
+      'todo',
+      '001-workspace-design.md'
+    );
+    const completedPath = join(
+      workspaceProject,
+      'done',
+      '001-workspace-design.md'
+    );
+    const cli = ['bun', resolve(repositoryRoot, 'src/cli.ts')];
+    await Promise.all([
+      mkdir(root, { recursive: true }),
+      mkdir(resolve(workspaceTicket, '..'), { recursive: true }),
+    ]);
+    await writeFile(workspaceTicket, '---\nTags: []\n---\n');
+    await run([...cli, 'init'], { cwd: root, env: { HOME: home } });
+    const created = await run(
+      [
+        ...cli,
+        'create',
+        'dependent',
+        '--blocked-by',
+        'platform/001-workspace-design',
+      ],
+      { cwd: root, env: { HOME: home } }
+    );
+
+    expect(
+      await run([...cli, 'done', 'platform/001-workspace-design'], {
+        cwd: root,
+        env: { HOME: home },
+      })
+    ).toEqual({ stdout: `${completedPath}\n`, stderr: '', exitCode: 0 });
+    expect(await readFile(created.stdout.trim(), 'utf8')).toContain(
+      'platform/001-workspace-design'
+    );
+  });
+
+  test('lints Embedded references against Workspace Projects', async () => {
+    const home = join(temporaryDirectory, 'embedded-lint-home');
+    const root = join(home, 'research');
+    const workspaceTicket = join(
+      home,
+      '.local',
+      'state',
+      'tickets',
+      'platform',
+      'todo',
+      '001-workspace-design.md'
+    );
+    const cli = ['bun', resolve(repositoryRoot, 'src/cli.ts')];
+    await Promise.all([
+      mkdir(root, { recursive: true }),
+      mkdir(resolve(workspaceTicket, '..'), { recursive: true }),
+    ]);
+    await writeFile(workspaceTicket, '---\nTags: []\n---\n');
+    await run([...cli, 'init'], { cwd: root, env: { HOME: home } });
+    await run(
+      [
+        ...cli,
+        'create',
+        'dependent',
+        '--blocked-by',
+        'platform/001-workspace-design',
+      ],
+      { cwd: root, env: { HOME: home } }
+    );
+
+    expect(
+      await run([...cli, 'lint', '--json'], {
+        cwd: root,
+        env: { HOME: home },
+      })
+    ).toEqual({
+      stdout: `${JSON.stringify({ project: 'research', violations: [] }, null, 2)}\n`,
+      stderr: '',
+      exitCode: 0,
+    });
+  });
+
+  test('reports broken qualified references when the Workspace is absent', async () => {
+    const home = join(temporaryDirectory, 'embedded-broken-reference-home');
+    const root = join(home, 'research');
+    const ticketPath = join(root, '.tickets', 'todo', '001-dependent.md');
+    const cli = ['bun', resolve(repositoryRoot, 'src/cli.ts')];
+    await mkdir(root, { recursive: true });
+    await run([...cli, 'init'], { cwd: root, env: { HOME: home } });
+    await run(
+      [...cli, 'create', 'dependent', '--blocked-by', 'platform/001-missing'],
+      { cwd: root, env: { HOME: home } }
+    );
+
+    expect(
+      await run([...cli, 'lint'], { cwd: root, env: { HOME: home } })
+    ).toEqual({
+      stdout: `${ticketPath}\tbroken-blocker-reference\tBlocker reference does not resolve to exactly one ticket: platform/001-missing\n`,
+      stderr: '',
+      exitCode: 1,
+    });
+  });
+
+  test('prepends the active Embedded Project to the default project list', async () => {
+    const home = join(temporaryDirectory, 'embedded-project-list-home');
+    const root = join(home, 'Research Project');
+    const embeddedPath = join(root, '.tickets');
+    const workspace = join(home, '.local', 'state', 'tickets');
+    const alphaPath = join(workspace, 'alpha');
+    const zuluPath = join(workspace, 'zulu');
+    const cli = ['bun', resolve(repositoryRoot, 'src/cli.ts')];
+    await Promise.all([
+      mkdir(root, { recursive: true }),
+      mkdir(alphaPath, { recursive: true }),
+      mkdir(zuluPath, { recursive: true }),
+    ]);
+    await run([...cli, 'init'], { cwd: root, env: { HOME: home } });
+
+    const expected = {
+      stdout: `research-project\t${embeddedPath}\nalpha\t${alphaPath}\nzulu\t${zuluPath}\n`,
+      stderr: '',
+      exitCode: 0,
+    };
+    expect(
+      await run([...cli, 'project', 'list'], {
+        cwd: root,
+        env: { HOME: home },
+      })
+    ).toEqual(expected);
+    expect(
+      await run([...cli, '--project', 'alpha', 'project', 'list'], {
+        cwd: root,
+        env: { HOME: home },
+      })
+    ).toEqual(expected);
+  });
+
+  test('lists only the active Embedded Project when the Workspace is absent', async () => {
+    const home = join(temporaryDirectory, 'embedded-only-list-home');
+    const root = join(home, 'research');
+    const embeddedPath = join(root, '.tickets');
+    const cli = ['bun', resolve(repositoryRoot, 'src/cli.ts')];
+    await mkdir(root, { recursive: true });
+    await run([...cli, 'init'], { cwd: root, env: { HOME: home } });
+
+    expect(
+      await run([...cli, 'project', 'list', '--json'], {
+        cwd: root,
+        env: { HOME: home },
+      })
+    ).toEqual({
+      stdout: `${JSON.stringify(
+        { projects: [{ name: 'research', path: embeddedPath }] },
+        null,
+        2
+      )}\n`,
+      stderr: '',
+      exitCode: 0,
+    });
+  });
+
+  test('fails on a nearest Embedded Project without project metadata', async () => {
+    const home = join(temporaryDirectory, 'invalid-embedded-home');
+    const root = join(home, 'research');
+    const projectPath = join(root, '.tickets');
+    await mkdir(projectPath, { recursive: true });
+
+    const result = await run(
+      ['bun', resolve(repositoryRoot, 'src/cli.ts'), 'project', 'list'],
+      { cwd: root, env: { HOME: home } }
+    );
+    expect(result.stdout).toBe('');
+    expect(result.stderr).toContain(join(projectPath, 'project.md'));
+    expect(result.exitCode).toBe(2);
+  });
+
+  test('fails on invalid Embedded Project metadata', async () => {
+    const home = join(temporaryDirectory, 'invalid-embedded-metadata-home');
+    const root = join(home, 'research');
+    const projectPath = join(root, '.tickets');
+    await mkdir(join(projectPath, 'todo'), { recursive: true });
+    await writeFile(join(projectPath, 'project.md'), '---\nGit-Repo:\n---\n');
+
+    expect(
+      await run(
+        ['bun', resolve(repositoryRoot, 'src/cli.ts'), 'project', 'list'],
+        { cwd: root, env: { HOME: home } }
+      )
+    ).toEqual({
+      stdout: '',
+      stderr: 'Project Default-Status must be a normalized status name\n',
+      exitCode: 2,
+    });
+  });
+
+  test('rejects an invalid Embedded Project repository association', async () => {
+    const home = join(temporaryDirectory, 'invalid-embedded-repository-home');
+    const root = join(home, 'research');
+    const projectPath = join(root, '.tickets');
+    await mkdir(join(projectPath, 'todo'), { recursive: true });
+    await writeFile(
+      join(projectPath, 'project.md'),
+      '---\nDefault-Status: todo\nGit-Repo: 42\n---\n'
+    );
+
+    expect(
+      await run(
+        ['bun', resolve(repositoryRoot, 'src/cli.ts'), 'status', 'list'],
+        { cwd: root, env: { HOME: home } }
+      )
+    ).toEqual({
+      stdout: '',
+      stderr: 'Git-Repo is not a supported remote\n',
+      exitCode: 2,
+    });
+  });
+
   test('creates default and custom projects and reports only their paths', async () => {
     const workspace = join(temporaryDirectory, 'create-projects');
     const defaultPath = join(workspace, 'default-project');
