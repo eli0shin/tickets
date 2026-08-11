@@ -113,6 +113,7 @@ type CliDependencies = {
 };
 
 type SearchOptions = SearchInput & { readonly json?: boolean };
+type EmbeddedMetadataValidation = 'all' | 'non-default' | 'none';
 
 export function createProgram({
   confirmOverwrite: confirm = confirmOverwrite,
@@ -282,13 +283,21 @@ export function createProgram({
 
   program
     .command('list')
-    .description('list tickets in one status')
-    .argument('<status>')
+    .description('list tickets in one status (defaults to Default-Status)')
+    .argument('[status]')
     .option('--json', 'emit JSON output')
     .action(async (statusName, { json }) => {
-      const validation = validateStatus(statusName);
-      if (!validation.ok) return writeCommandFailure(validation.failure);
-      const selected = await selectedTracker(program, cwd, select, true);
+      if (statusName !== undefined) {
+        const validation = validateStatus(statusName);
+        if (!validation.ok) return writeCommandFailure(validation.failure);
+      }
+      const selected = await selectedTracker(
+        program,
+        cwd,
+        select,
+        true,
+        'non-default'
+      );
       if (!selected.ok) return writeCommandFailure(selected.failure);
       writeCommandOutcome(
         await listTickets(
@@ -474,7 +483,7 @@ export function createProgram({
         cwd,
         select,
         false,
-        false
+        'none'
       );
       if (!selected.ok) return writeCommandFailure(selected.failure);
       writeLintOutcome(
@@ -519,7 +528,7 @@ async function selectedTracker(
   cwd: string,
   select: SelectProjectForCli,
   validateExplicit = false,
-  validateEmbeddedMetadata = true
+  embeddedMetadataValidation: EmbeddedMetadataValidation = 'all'
 ): Promise<
   CommandOutcome<{ readonly tracker: Tracker; readonly project: string }>
 > {
@@ -539,10 +548,11 @@ async function selectedTracker(
     }
     if (embedded.project !== undefined) {
       const referenceWorkspaceRoot = workspaceRootFor(undefined);
-      if (validateEmbeddedMetadata) {
+      if (embeddedMetadataValidation !== 'none') {
         const validation = await validateEmbeddedProject(
           embedded.project,
-          referenceWorkspaceRoot
+          referenceWorkspaceRoot,
+          embeddedMetadataValidation === 'all'
         );
         if (!validation.ok) return validation;
         return successfulSelection(validation.value, embedded.project.name);
@@ -657,10 +667,13 @@ function workspaceRootFor(workspace: string | undefined): string {
 
 async function validateEmbeddedProject(
   project: Project,
-  referenceWorkspaceRoot: string
+  referenceWorkspaceRoot: string,
+  validateDefaultStatus = true
 ): Promise<CommandOutcome<Tracker>> {
   const tracker = createEmbeddedTracker(project, referenceWorkspaceRoot);
-  const validation = await tracker.validateProject(project.name);
+  const validation = await tracker.validateProject(project.name, {
+    defaultStatus: validateDefaultStatus,
+  });
   return validation.ok
     ? { ok: true, value: tracker }
     : {

@@ -10,7 +10,7 @@ Tickets provides a narrow status listing, a project-wide structured search, and 
 
 ### Listing
 
-A listing targets exactly one explicitly selected status and returns every ticket in that status. `done` behaves like any other status. A listing cannot span multiple statuses and has no filtering behavior.
+A listing targets exactly one status and returns every ticket in that status. It uses the project's default status when the caller omits a status; an explicit status does not depend on the default-status metadata. `done` behaves like any other status. A listing cannot span multiple statuses and has no filtering behavior.
 
 ### Search
 

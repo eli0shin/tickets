@@ -62,10 +62,12 @@ export async function showTicket(
 export async function listTickets(
   tracker: Tracker,
   project: string,
-  status: string
+  status?: string
 ): Promise<CommandOutcome<QueryResult>> {
-  const validation = validateName('status', status);
-  if (!validation.ok) return validation;
+  if (status !== undefined) {
+    const validation = validateName('status', status);
+    if (!validation.ok) return validation;
+  }
 
   return queryOutcome(await tracker.listTickets(project, status));
 }

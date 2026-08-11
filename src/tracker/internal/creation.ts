@@ -280,6 +280,15 @@ export async function validateProjectDocument(
   project: Project,
   document: { readonly metadata: Readonly<Record<string, unknown>> }
 ): Promise<Outcome<string>> {
+  const metadata = validateProjectMetadata(project, document);
+  if (!metadata.ok) return metadata;
+  return validateDefaultStatus(project, document);
+}
+
+export function validateProjectMetadata(
+  project: Project,
+  document: { readonly metadata: Readonly<Record<string, unknown>> }
+): Outcome<undefined> {
   const repository = document.metadata['Git-Repo'];
   if (
     repository !== undefined &&
@@ -295,6 +304,13 @@ export async function validateProjectDocument(
     );
   }
 
+  return { ok: true, value: undefined };
+}
+
+export async function validateDefaultStatus(
+  project: Project,
+  document: { readonly metadata: Readonly<Record<string, unknown>> }
+): Promise<Outcome<string>> {
   const defaultStatus = document.metadata['Default-Status'];
   if (typeof defaultStatus !== 'string' || !isNormalizedName(defaultStatus)) {
     return failure(
