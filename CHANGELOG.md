@@ -1,5 +1,13 @@
 # tickets
 
+## 0.6.0
+
+### Minor Changes
+
+- [#35](https://github.com/eli0shin/tickets/pull/35) [`c2fc9a2`](https://github.com/eli0shin/tickets/commit/c2fc9a275279f6493e6126663403036a767ca333) Thanks [@eli0shin](https://github.com/eli0shin)! - Use the project's default status when `tickets list` omits its status argument.
+
+- [#34](https://github.com/eli0shin/tickets/pull/34) [`274bf2f`](https://github.com/eli0shin/tickets/commit/274bf2feeea101d897179a5a2fc63dade451955a) Thanks [@eli0shin](https://github.com/eli0shin)! - Accept literal ticket ID selectors everywhere the CLI accepts a ticket reference.
+
 ## 0.5.0
 
 ### Minor Changes
