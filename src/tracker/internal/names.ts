@@ -43,11 +43,32 @@ export function parseTicketName(value: string): ParsedTicketName | null {
   return { id, name: value, description };
 }
 
+export function isTicketId(value: string): boolean {
+  return /^\d+$/.test(value) && BigInt(value) > 0n;
+}
+
 export function isTicketReference(value: string): boolean {
+  return isQualifiedTicketValue(
+    value,
+    (ticket) => parseTicketName(ticket) !== null
+  );
+}
+
+export function isTicketSelector(value: string): boolean {
+  return isQualifiedTicketValue(
+    value,
+    (ticket) => isTicketId(ticket) || parseTicketName(ticket) !== null
+  );
+}
+
+function isQualifiedTicketValue(
+  value: string,
+  validateTicket: (ticket: string) => boolean
+): boolean {
   const parts = value.split('/');
-  if (parts.length === 1) return parseTicketName(value) !== null;
+  if (parts.length === 1) return validateTicket(value);
   if (parts.length !== 2) return false;
 
-  const [projectName, ticketName] = parts;
-  return isNormalizedName(projectName) && parseTicketName(ticketName) !== null;
+  const [projectName, ticket] = parts;
+  return isNormalizedName(projectName) && validateTicket(ticket);
 }

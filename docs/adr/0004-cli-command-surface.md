@@ -49,22 +49,26 @@ tickets create <description>
   [--status <status>]
   [--assign <name>]
   [--tag <tag>...]
-  [--parent <reference>]
-  [--blocked-by <reference>...]
+  [--parent <selector>]
+  [--blocked-by <selector>...]
 
-tickets show <reference>
-tickets rename <reference> <description>
-tickets move <reference> <status>
-tickets done <reference>
+tickets show <selector>
+tickets rename <selector> <description>
+tickets move <selector> <status>
+tickets done <selector>
 tickets list <status> [--json]
 tickets search
   [--status <status>]
   [--tag <tag>...]
   [--assigned-to <name> | --unassigned]
-  [--parent <reference>]
-  [--blocked-by <reference>... | --unblocked]
+  [--parent <selector>]
+  [--blocked-by <selector>... | --unblocked]
   [--json]
 ```
+
+A ticket selector is either a full ticket reference or a positive decimal ticket ID, optionally qualified with a Workspace Project name. ID selection matches the ticket-name prefix literally without a minimum selector length: `64` does not match `064-description`. The on-disk minimum ID width and numeric duplicate-ID rules do not change. Selection fails when the literal ID has no match or more than one match.
+
+The CLI accepts selectors for ticket targets, relationship creation options, and relationship search options. It resolves an ID to the full local or cross-project reference before storing or comparing relationship metadata. Full references retain their existing behavior.
 
 Creation uses the project's `Default-Status` unless `--status` overrides it. Create and rename accept human-readable descriptions and normalize them deterministically to the lowercase kebab-case on-disk description defined by the filesystem contract. They reject descriptions only when normalization cannot produce that on-disk form. Creation writes the standard front matter with supplied metadata and an empty Markdown body.
 

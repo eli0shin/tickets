@@ -27,29 +27,29 @@ const helpOutput = `Usage: tickets [options] [command]
 Manage tickets in a local filesystem tracker
 
 Options:
-  -V, --version                     output the version number
-  --workspace <path>                override the default ~/.local/state/tickets
-                                    workspace
-  --project <name>                  select a project by name
-  -h, --help                        display help for command
+  -V, --version                    output the version number
+  --workspace <path>               override the default ~/.local/state/tickets
+                                   workspace
+  --project <name>                 select a project by name
+  -h, --help                       display help for command
 
 Commands:
-  init [options]                    initialize an Embedded Project in the
-                                    current directory
-  project                           manage projects
-  status                            manage statuses
-  show <reference>                  show a ticket path and complete document
-  list [options] <status>           list tickets in one status
-  search [options]                  search tickets using structured criteria
-  create [options] <description>    create a ticket in the selected project
-  rename <reference> <description>  rename a ticket and update workspace
-                                    references
-  move <reference> <status>         move a ticket to another status
-  done <reference>                  complete a ticket
-  update                            update Tickets CLI to latest version
-  skill                             manage agent skills
-  lint [options]                    validate the selected project
-  help [command]                    display help for command
+  init [options]                   initialize an Embedded Project in the current
+                                   directory
+  project                          manage projects
+  status                           manage statuses
+  show <selector>                  show a ticket path and complete document
+  list [options] <status>          list tickets in one status
+  search [options]                 search tickets using structured criteria
+  create [options] <description>   create a ticket in the selected project
+  rename <selector> <description>  rename a ticket and update workspace
+                                   references
+  move <selector> <status>         move a ticket to another status
+  done <selector>                  complete a ticket
+  update                           update Tickets CLI to latest version
+  skill                            manage agent skills
+  lint [options]                   validate the selected project
+  help [command]                   display help for command
 `;
 
 const searchHelpOutput = `Usage: tickets search [options]
@@ -57,16 +57,16 @@ const searchHelpOutput = `Usage: tickets search [options]
 search tickets using structured criteria
 
 Options:
-  --status <status>         match tickets in this status (repeatable) (default:
-                            [])
-  --tag <tag>               match every tag (default: [])
-  --assigned-to <name>      exactly match every assignee name (default: [])
-  --unassigned              match unassigned tickets
-  --parent <reference>      match every parent reference (default: [])
-  --blocked-by <reference>  match every blocker reference (default: [])
-  --unblocked               match tickets without blockers
-  --json                    emit JSON output
-  -h, --help                display help for command
+  --status <status>        match tickets in this status (repeatable) (default:
+                           [])
+  --tag <tag>              match every tag (default: [])
+  --assigned-to <name>     exactly match every assignee name (default: [])
+  --unassigned             match unassigned tickets
+  --parent <selector>      match every parent selector (default: [])
+  --blocked-by <selector>  match every blocker selector (default: [])
+  --unblocked              match tickets without blockers
+  --json                   emit JSON output
+  -h, --help               display help for command
 `;
 
 type ProcessResult = {
@@ -390,16 +390,23 @@ Options:
       'show',
     ];
 
-    expect(await run([...command, '001-local'])).toEqual({
-      stdout: `${localPath}\n${localDocument}`,
-      stderr: '',
-      exitCode: 0,
-    });
-    expect(await run([...command, 'beta-project/002-cross-project'])).toEqual({
-      stdout: `${crossProjectPath}\n${crossProjectDocument}`,
-      stderr: '',
-      exitCode: 0,
-    });
+    for (const selector of ['001-local', '001']) {
+      expect(await run([...command, selector])).toEqual({
+        stdout: `${localPath}\n${localDocument}`,
+        stderr: '',
+        exitCode: 0,
+      });
+    }
+    for (const selector of [
+      'beta-project/002-cross-project',
+      'beta-project/002',
+    ]) {
+      expect(await run([...command, selector])).toEqual({
+        stdout: `${crossProjectPath}\n${crossProjectDocument}`,
+        stderr: '',
+        exitCode: 0,
+      });
+    }
   });
 
   test('worker mode dispatches before normal CLI parsing', async () => {
@@ -1133,7 +1140,7 @@ describe('read-only commands', () => {
     });
     expect(await run([...base, 'BAD'], { cwd })).toEqual({
       stdout: '',
-      stderr: 'Invalid ticket reference: BAD\n',
+      stderr: 'Invalid ticket selector: BAD\n',
       exitCode: 2,
     });
   });
@@ -1594,6 +1601,63 @@ describe('resource creation commands', () => {
       })
     ).toEqual({
       stdout: `platform\t${workspaceProject}\n`,
+      stderr: '',
+      exitCode: 0,
+    });
+  });
+
+  test('resolves qualified relationship IDs against same-name Workspace Projects', async () => {
+    const home = join(temporaryDirectory, 'embedded-selector-collision-home');
+    const root = join(home, 'research');
+    const workspaceTicket = join(
+      home,
+      '.local',
+      'state',
+      'tickets',
+      'research',
+      'todo',
+      '001-workspace-source.md'
+    );
+    const cli = ['bun', resolve(repositoryRoot, 'src/cli.ts')];
+    await Promise.all([
+      mkdir(root, { recursive: true }),
+      mkdir(resolve(workspaceTicket, '..'), { recursive: true }),
+    ]);
+    await writeFile(workspaceTicket, '---\nBlocked-By: []\n---\n');
+    await run([...cli, 'init'], { cwd: root, env: { HOME: home } });
+    await run([...cli, 'create', 'Local Source'], {
+      cwd: root,
+      env: { HOME: home },
+    });
+
+    const dependent = await run(
+      [
+        ...cli,
+        'create',
+        'dependent',
+        '--parent',
+        'research/001',
+        '--blocked-by',
+        '001',
+      ],
+      { cwd: root, env: { HOME: home } }
+    );
+    const dependentPath = join(root, '.tickets', 'todo', '002-dependent.md');
+    expect(dependent).toEqual({
+      stdout: `${dependentPath}\n`,
+      stderr: '',
+      exitCode: 0,
+    });
+    expect(await readFile(dependentPath, 'utf8')).toContain(
+      'Parent: research/001-workspace-source\nBlocked-By:\n  - 001-local-source'
+    );
+    expect(
+      await run(
+        [...cli, 'search', '--parent', 'research/001', '--blocked-by', '001'],
+        { cwd: root, env: { HOME: home } }
+      )
+    ).toEqual({
+      stdout: `todo\t002-dependent\t${dependentPath}\n`,
       stderr: '',
       exitCode: 0,
     });
@@ -2464,7 +2528,7 @@ describe('ticket mutation commands', () => {
   test('rejects invalid mutation arguments with deterministic CLI failures', async () => {
     expect(await run(['bun', 'src/cli.ts', 'done', 'BAD'])).toEqual({
       stdout: '',
-      stderr: 'Invalid ticket reference: BAD\n',
+      stderr: 'Invalid ticket selector: BAD\n',
       exitCode: 2,
     });
   });

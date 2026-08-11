@@ -59,8 +59,11 @@ and trailing separators are removed; and Unicode is compatibility-decomposed wit
 combining marks removed. Input is rejected when no ASCII letters or digits remain.
 Existing lowercase kebab-case descriptions are preserved exactly.
 
-`tickets show <reference>` prints the resolved ticket's absolute path on the first
-line, followed by the complete ticket document.
+`tickets show <selector>` prints the resolved ticket's absolute path on the first
+line, followed by the complete ticket document. A selector can be a full ticket
+reference or a literal ticket ID such as `064` or `proxmox-config/064`. Literal ID
+selectors work anywhere the CLI accepts a ticket reference. They have no minimum
+length, but they do not ignore padding: `64` does not match `064-description`.
 
 ## Embedded Projects
 
