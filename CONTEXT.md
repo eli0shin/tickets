@@ -25,8 +25,12 @@ An optional relationship between a project and a Git repository, identified by t
 _Avoid_: Current remote, project repository
 
 **Ticket**:
-A self-contained record of a unit of planned work within one project. Its project-unique name begins with a sequential number of at least three digits and includes a human-readable description, such as `001-add-blocking`.
+A self-contained record of a unit of planned work within one project. Its project-unique name begins with a ticket ID and includes a human-readable description, such as `001-add-blocking`.
 _Avoid_: Issue, card, task
+
+**Ticket ID**:
+The project-unique positive decimal prefix of a ticket name.
+_Avoid_: Ticket number
 
 **Ticket reference**:
 A ticket name when referring within its project, or a Workspace Project name followed by a ticket name when referring across projects. Tickets in an Embedded Project are always referenced without a project prefix.

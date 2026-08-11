@@ -49,7 +49,7 @@ describe('command module boundaries', () => {
       ok: false,
       failure: {
         kind: 'message',
-        message: 'Invalid ticket reference: INVALID',
+        message: 'Invalid ticket selector: INVALID',
       },
     });
   });

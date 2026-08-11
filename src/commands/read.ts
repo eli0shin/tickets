@@ -1,7 +1,7 @@
 import {
   isAssigneeName,
   isNormalizedName,
-  isTicketReference,
+  isTicketSelector,
   type Project,
   type QueryResult,
   type SearchCriteria,
@@ -101,9 +101,9 @@ export function validateProject(
 export function validateReference(
   reference: string
 ): CommandOutcome<undefined> {
-  return isTicketReference(reference)
+  return isTicketSelector(reference)
     ? { ok: true, value: undefined }
-    : failure(`Invalid ticket reference: ${reference}`);
+    : failure(`Invalid ticket selector: ${reference}`);
 }
 
 export function validateSearchInput(

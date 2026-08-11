@@ -65,7 +65,7 @@ import {
   createEmbeddedTracker,
   createTracker,
   isNormalizedName,
-  isTicketReference,
+  isTicketSelector,
   normalizeName,
   type DocumentDiagnostic,
   type Project,
@@ -257,7 +257,7 @@ export function createProgram({
   program
     .command('show')
     .description('show a ticket path and complete document')
-    .argument('<reference>')
+    .argument('<selector>', 'ticket reference or literal ticket ID')
     .action(async (reference) => {
       const validation = validateReference(reference);
       if (!validation.ok) return writeCommandFailure(validation.failure);
@@ -319,10 +319,10 @@ export function createProgram({
       []
     )
     .option('--unassigned', 'match unassigned tickets')
-    .option('--parent <reference>', 'match every parent reference', collect, [])
+    .option('--parent <selector>', 'match every parent selector', collect, [])
     .option(
-      '--blocked-by <reference>',
-      'match every blocker reference',
+      '--blocked-by <selector>',
+      'match every blocker selector',
       collect,
       []
     )
@@ -355,8 +355,8 @@ export function createProgram({
     .option('--status <status>', 'status for the new ticket')
     .option('--assign <name>', 'exact assignee name for the new ticket')
     .option('--tag <tag...>', 'one or more tags')
-    .option('--parent <reference>', 'parent ticket reference')
-    .option('--blocked-by <reference...>', 'one or more blocking references')
+    .option('--parent <selector>', 'parent ticket reference or ID')
+    .option('--blocked-by <selector...>', 'blocking ticket references or IDs')
     .action(async (description, options) => {
       const selected = await selectedTracker(program, cwd, select);
       if (!selected.ok) return writeCommandFailure(selected.failure);
@@ -375,7 +375,7 @@ export function createProgram({
   program
     .command('rename')
     .description('rename a ticket and update workspace references')
-    .argument('<reference>', 'ticket reference')
+    .argument('<selector>', 'ticket reference or literal ticket ID')
     .argument(
       '<description>',
       'human-readable text; normalized to lowercase kebab-case'
@@ -397,7 +397,7 @@ export function createProgram({
   program
     .command('move')
     .description('move a ticket to another status')
-    .argument('<reference>', 'ticket reference')
+    .argument('<selector>', 'ticket reference or literal ticket ID')
     .argument('<status>', 'destination status')
     .action(async (reference, statusName) => {
       if (!validMutationReference(reference)) return;
@@ -422,7 +422,7 @@ export function createProgram({
   program
     .command('done')
     .description('complete a ticket')
-    .argument('<reference>', 'ticket reference')
+    .argument('<selector>', 'ticket reference or literal ticket ID')
     .action(async (reference) => {
       if (!validMutationReference(reference)) return;
       const selected = await mutationTracker(program, cwd, select, reference);
@@ -639,10 +639,10 @@ function successfulSelection(
 }
 
 function validMutationReference(reference: string): boolean {
-  if (isTicketReference(reference)) return true;
+  if (isTicketSelector(reference)) return true;
   writeCommandFailure({
     kind: 'message',
-    message: `Invalid ticket reference: ${reference}`,
+    message: `Invalid ticket selector: ${reference}`,
   });
   return false;
 }

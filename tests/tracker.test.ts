@@ -14,6 +14,7 @@ import {
   createTracker,
   isNormalizedName,
   isTicketReference,
+  isTicketSelector,
   parseTicketName,
   type Project,
   type Ticket,
@@ -104,6 +105,14 @@ describe('tracker naming contract', () => {
       isTicketReference('Alpha/001-add-search'),
       isTicketReference('alpha/todo/001-add-search'),
     ]).toEqual([true, true, false, false]);
+    expect([
+      isTicketSelector('1'),
+      isTicketSelector('064'),
+      isTicketSelector('alpha-project/0064'),
+      isTicketSelector('0'),
+      isTicketSelector('00'),
+      isTicketSelector('alpha-project/not-an-id'),
+    ]).toEqual([true, true, true, false, false, false]);
   });
 });
 
@@ -673,6 +682,15 @@ describe('tracker read-only queries', () => {
         document: source,
       },
     });
+    expect(
+      await tracker.showTicket('alpha-project', 'beta-project/001')
+    ).toEqual({
+      ok: true,
+      value: {
+        path: join(workspaceRoot, 'beta-project', 'done', '001-exact.md'),
+        document: source,
+      },
+    });
 
     await mkdir(join(workspaceRoot, 'beta-project', 'todo'));
     await writeFile(
@@ -684,6 +702,45 @@ describe('tracker read-only queries', () => {
     if (ambiguous.ok) throw new Error('Expected ambiguous reference');
     expect(ambiguous.diagnostic.message).toBe(
       'Ticket reference is ambiguous: 001-exact'
+    );
+  });
+
+  test('resolves ticket IDs by their literal prefix text', async () => {
+    const workspaceRoot = await temporaryWorkspace();
+    const projectPath = join(workspaceRoot, 'alpha-project');
+    const todoPath = join(projectPath, 'todo');
+    const donePath = join(projectPath, 'done');
+    await mkdir(todoPath, { recursive: true });
+    await mkdir(donePath);
+    await writeFile(join(todoPath, '064-padded.md'), 'padded');
+    await writeFile(join(donePath, '0064-more-padded.md'), 'more padded');
+
+    const tracker = createTracker(workspaceRoot);
+    expect(await tracker.showTicket('alpha-project', '064')).toEqual({
+      ok: true,
+      value: {
+        path: join(todoPath, '064-padded.md'),
+        document: 'padded',
+      },
+    });
+    expect(await tracker.showTicket('alpha-project', '0064')).toEqual({
+      ok: true,
+      value: {
+        path: join(donePath, '0064-more-padded.md'),
+        document: 'more padded',
+      },
+    });
+    const short = await tracker.showTicket('alpha-project', '64');
+    expect(short.ok).toBe(false);
+    if (short.ok) throw new Error('Expected a literal selector miss');
+    expect(short.diagnostic.message).toBe('Ticket not found: 64');
+
+    await writeFile(join(donePath, '064-duplicate.md'), 'duplicate');
+    const ambiguous = await tracker.showTicket('alpha-project', '064');
+    expect(ambiguous.ok).toBe(false);
+    if (ambiguous.ok) throw new Error('Expected an ambiguous selector');
+    expect(ambiguous.diagnostic.message).toBe(
+      'Ticket selector is ambiguous: 064'
     );
   });
 });
@@ -939,6 +996,38 @@ describe('tracker resource creation', () => {
         '',
       ].join('\n')
     );
+  });
+
+  test('canonicalizes relationship ID selectors for creation and search', async () => {
+    const workspaceRoot = await temporaryWorkspace();
+    const tracker = createTracker(workspaceRoot);
+    await tracker.createProject('alpha-project');
+    await tracker.createProject('beta-project');
+    await writeFile(
+      join(workspaceRoot, 'alpha-project', 'todo', '001-parent.md'),
+      '---\nBlocked-By: []\n---\n'
+    );
+    await writeFile(
+      join(workspaceRoot, 'beta-project', 'todo', '003-blocker.md'),
+      '---\nBlocked-By: []\n---\n'
+    );
+
+    const created = await tracker.createTicket('alpha-project', {
+      description: 'child',
+      parent: '001',
+      blockedBy: ['beta-project/003'],
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) throw new Error(created.diagnostic.message);
+    expect(await readFile(created.value.path, 'utf8')).toContain(
+      'Parent: 001-parent\nBlocked-By:\n  - beta-project/003-blocker'
+    );
+
+    const result = await tracker.searchTickets('alpha-project', {
+      parents: ['001'],
+      blockedBy: ['beta-project/003'],
+    });
+    expect(result.tickets.map(({ name }) => name)).toEqual(['002-child']);
   });
 
   test('normalizes human-readable descriptions deterministically while preserving kebab-case', async () => {
@@ -1510,6 +1599,38 @@ describe('tracker document parsing and canonical writing', () => {
 });
 
 describe('tracker ticket mutations', () => {
+  test('renames, moves, and completes tickets selected by literal ID', async () => {
+    const workspaceRoot = await temporaryWorkspace();
+    const projectPath = join(workspaceRoot, 'alpha-project');
+    const todo = join(projectPath, 'todo');
+    const inProgress = join(projectPath, 'in-progress');
+    await mkdir(todo, { recursive: true });
+    await mkdir(inProgress);
+    await writeFile(
+      join(todo, '064-original.md'),
+      '---\nBlocked-By: []\n---\n'
+    );
+    const tracker = createTracker(workspaceRoot);
+
+    const renamed = await tracker.renameTicket(
+      'alpha-project',
+      '064',
+      'renamed'
+    );
+    expect(renamed.ok).toBe(true);
+    const moved = await tracker.moveTicket(
+      'alpha-project',
+      '064',
+      'in-progress'
+    );
+    expect(moved.ok).toBe(true);
+    const completed = await tracker.completeTicket('alpha-project', '064');
+    expect(completed.ok).toBe(true);
+    expect(
+      await readFile(join(projectPath, 'done', '064-renamed.md'), 'utf8')
+    ).toBe('---\nBlocked-By: []\n---\n');
+  });
+
   test('rejects empty and punctuation-only rename descriptions without filesystem or reference mutation', async () => {
     const workspaceRoot = await temporaryWorkspace();
     const todo = join(workspaceRoot, 'alpha-project', 'todo');

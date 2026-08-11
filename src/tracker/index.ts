@@ -31,6 +31,7 @@ import {
   isAssigneeName,
   isNormalizedName,
   isTicketReference,
+  isTicketSelector,
   normalizeName,
   parseTicketName,
   type ParsedTicketName,
@@ -54,6 +55,11 @@ import {
   type MutationOutcome,
   type MutationProjectCollection,
 } from './internal/mutations.ts';
+import {
+  canonicalizeTicketSelector,
+  canonicalizeTicketSelectors,
+  type TicketSelectorProjects,
+} from './internal/selectors.ts';
 
 export type {
   Discovery,
@@ -85,6 +91,7 @@ export {
   isAssigneeName,
   isNormalizedName,
   isTicketReference,
+  isTicketSelector,
   normalizeName,
   parseTicketName,
 };
@@ -190,6 +197,14 @@ function createConfiguredTracker(
         ? discoverProjects(absoluteRoot)
         : Promise.resolve({ entries: [embeddedProject], diagnostics: [] }),
   } satisfies MutationProjectCollection;
+  const selectorProjects = {
+    diagnosticPath: absoluteRoot,
+    localProjectAt: projectAt,
+    qualifiedProjectAt: (name: string) => ({
+      name,
+      path: join(referenceWorkspaceRoot, name),
+    }),
+  } satisfies TicketSelectorProjects;
 
   function statusAt(projectName: string, name: string): Status {
     const project = projectAt(projectName);
@@ -230,10 +245,17 @@ function createConfiguredTracker(
       embeddedProject?.name === projectName
         ? createStatusInProject(embeddedProject, name)
         : createStatus(absoluteRoot, projectName, name),
-    createTicket: (projectName, input) =>
-      embeddedProject?.name === projectName
-        ? createTicketInProject(embeddedProject, input)
-        : createTicket(absoluteRoot, projectName, input),
+    createTicket: async (projectName, input) => {
+      const canonicalInput = await canonicalizeCreateTicketInput(
+        selectorProjects,
+        projectName,
+        input
+      );
+      if (!canonicalInput.ok) return canonicalInput;
+      return embeddedProject?.name === projectName
+        ? createTicketInProject(embeddedProject, canonicalInput.value)
+        : createTicket(absoluteRoot, projectName, canonicalInput.value);
+    },
     discoverProjects: () =>
       embeddedProject === undefined
         ? discoverProjects(absoluteRoot)
@@ -323,7 +345,13 @@ function createConfiguredTracker(
       if (!isNormalizedName(projectName)) {
         return invalidOutcome(absoluteRoot, 'project', projectName);
       }
-      const resolved = splitReference(projectName, reference);
+      const canonicalReference = await canonicalizeTicketSelector(
+        selectorProjects,
+        projectName,
+        reference
+      );
+      if (!canonicalReference.ok) return canonicalReference;
+      const resolved = splitReference(projectName, canonicalReference.value);
       if (resolved === null) {
         return invalidOutcome(absoluteRoot, 'ticket', reference);
       }
@@ -412,6 +440,14 @@ function createConfiguredTracker(
       if (invalidCriteria !== null) {
         return failedQuery(projectName, invalidCriteria);
       }
+      const canonicalCriteria = await canonicalizeSearchCriteria(
+        selectorProjects,
+        projectName,
+        criteria
+      );
+      if (!canonicalCriteria.ok) {
+        return failedQuery(projectName, canonicalCriteria.diagnostic);
+      }
       const statuses = await discoverStatuses(projectAt(projectName));
       if (statuses.diagnostics.length > 0) {
         return {
@@ -424,7 +460,7 @@ function createConfiguredTracker(
       const selectedStatuses = selectSearchStatuses(
         projectAt(projectName),
         statuses.entries,
-        criteria.statuses
+        canonicalCriteria.value.statuses
       );
       if (!selectedStatuses.ok) {
         return failedQuery(projectName, selectedStatuses.diagnostic);
@@ -436,16 +472,109 @@ function createConfiguredTracker(
         projectName,
         discoveries,
         readSummaryDocument,
-        criteria
+        canonicalCriteria.value
       );
     },
-    renameTicket: (projectName, reference, description) =>
-      renameTicket(mutationProjects, projectName, reference, description),
-    moveTicket: (projectName, reference, statusName) =>
-      moveTicket(mutationProjects, projectName, reference, statusName),
-    completeTicket: (projectName, reference) =>
-      completeTicket(mutationProjects, projectName, reference),
+    renameTicket: async (projectName, reference, description) => {
+      const canonicalReference = await canonicalizeTicketSelector(
+        selectorProjects,
+        projectName,
+        reference
+      );
+      return canonicalReference.ok
+        ? renameTicket(
+            mutationProjects,
+            projectName,
+            canonicalReference.value,
+            description
+          )
+        : failedMutation(canonicalReference.diagnostic);
+    },
+    moveTicket: async (projectName, reference, statusName) => {
+      const canonicalReference = await canonicalizeTicketSelector(
+        selectorProjects,
+        projectName,
+        reference
+      );
+      return canonicalReference.ok
+        ? moveTicket(
+            mutationProjects,
+            projectName,
+            canonicalReference.value,
+            statusName
+          )
+        : failedMutation(canonicalReference.diagnostic);
+    },
+    completeTicket: async (projectName, reference) => {
+      const canonicalReference = await canonicalizeTicketSelector(
+        selectorProjects,
+        projectName,
+        reference
+      );
+      return canonicalReference.ok
+        ? completeTicket(
+            mutationProjects,
+            projectName,
+            canonicalReference.value
+          )
+        : failedMutation(canonicalReference.diagnostic);
+    },
   };
+}
+
+async function canonicalizeCreateTicketInput(
+  projects: TicketSelectorProjects,
+  projectName: string,
+  input: CreateTicketInput
+): Promise<Outcome<CreateTicketInput>> {
+  const selectors = [
+    ...(input.parent === undefined ? [] : [input.parent]),
+    ...(input.blockedBy ?? []),
+  ];
+  const references = await canonicalizeTicketSelectors(
+    projects,
+    projectName,
+    selectors
+  );
+  if (!references.ok) return references;
+
+  let index = 0;
+  const parent =
+    input.parent === undefined ? undefined : references.value[index++];
+  const blockedBy =
+    input.blockedBy === undefined ? undefined : references.value.slice(index);
+  return { ok: true, value: { ...input, parent, blockedBy } };
+}
+
+async function canonicalizeSearchCriteria(
+  projects: TicketSelectorProjects,
+  projectName: string,
+  criteria: SearchCriteria
+): Promise<Outcome<SearchCriteria>> {
+  const parents = await canonicalizeTicketSelectors(
+    projects,
+    projectName,
+    criteria.parents ?? []
+  );
+  if (!parents.ok) return parents;
+  const blockedBy = await canonicalizeTicketSelectors(
+    projects,
+    projectName,
+    criteria.blockedBy ?? []
+  );
+  if (!blockedBy.ok) return blockedBy;
+  return {
+    ok: true,
+    value: {
+      ...criteria,
+      parents: criteria.parents === undefined ? undefined : parents.value,
+      blockedBy: criteria.blockedBy === undefined ? undefined : blockedBy.value,
+    },
+  };
+}
+
+function failedMutation(diagnostic: DocumentDiagnostic): MutationOutcome {
+  return { ok: false, diagnostics: [diagnostic], partial: false };
 }
 
 function selectSearchStatuses(
@@ -509,11 +638,11 @@ function validateSearchCriteria(
     ...(criteria.blockedBy ?? []),
   ];
   for (const reference of references) {
-    if (!isTicketReference(reference)) {
+    if (!isTicketSelector(reference)) {
       return {
         path: workspaceRoot,
         code: 'invalid-name',
-        message: `Invalid ticket reference: ${reference}`,
+        message: `Invalid ticket selector: ${reference}`,
       };
     }
   }
