@@ -39,7 +39,8 @@ Commands:
   project                          manage projects
   status                           manage statuses
   show <selector>                  show a ticket path and complete document
-  list [options] <status>          list tickets in one status
+  list [options] [status]          list tickets in one status (defaults to
+                                   Default-Status)
   search [options]                 search tickets using structured criteria
   create [options] <description>   create a ticket in the selected project
   rename <selector> <description>  rename a ticket and update workspace
@@ -1223,6 +1224,104 @@ describe('read-only commands', () => {
     });
   });
 
+  test('lists the configured default status when status is omitted', async () => {
+    const cwd = await mkdtemp(join(temporaryDirectory, 'default-listing-'));
+    const workspace = join(cwd, 'workspace');
+    const projectPath = join(workspace, 'alpha-project');
+    const todoPath = join(projectPath, 'todo');
+    const backlogPath = join(projectPath, 'backlog');
+    const todoTicket = join(todoPath, '001-todo.md');
+    const backlogTicket = join(backlogPath, '002-backlog.md');
+    await mkdir(todoPath, { recursive: true });
+    await mkdir(backlogPath);
+    await writeFile(
+      join(projectPath, 'project.md'),
+      '---\nDefault-Status: backlog\n---\n'
+    );
+    await writeFile(todoTicket, '---\n---\n');
+    await writeFile(backlogTicket, '---\n---\n');
+    const base = [
+      'bun',
+      join(repositoryRoot, 'src/cli.ts'),
+      '--workspace',
+      workspace,
+      '--project',
+      'alpha-project',
+      'list',
+    ];
+
+    expect(await run(base, { cwd })).toEqual({
+      stdout: `backlog\t002-backlog\t${backlogTicket}\n`,
+      stderr: '',
+      exitCode: 0,
+    });
+    expect(await run([...base, '--json'], { cwd })).toEqual({
+      stdout: `${JSON.stringify(
+        {
+          project: 'alpha-project',
+          tickets: [
+            {
+              name: '002-backlog',
+              status: 'backlog',
+              path: backlogTicket,
+              assignedTo: null,
+              tags: [],
+              parent: null,
+              blockedBy: [],
+            },
+          ],
+        },
+        null,
+        2
+      )}\n`,
+      stderr: '',
+      exitCode: 0,
+    });
+  });
+
+  test('allows an explicit Embedded Project status with an invalid default', async () => {
+    const cwd = await mkdtemp(join(temporaryDirectory, 'embedded-listing-'));
+    const projectPath = join(cwd, '.tickets');
+    const projectMetadataPath = join(projectPath, 'project.md');
+    const todoPath = join(projectPath, 'todo');
+    const ticketPath = join(todoPath, '001-explicit.md');
+    await mkdir(todoPath, { recursive: true });
+    await writeFile(
+      projectMetadataPath,
+      '---\nDefault-Status: Not-Normalized\n---\n'
+    );
+    await writeFile(ticketPath, '---\n---\n');
+    const command = ['bun', join(repositoryRoot, 'src/cli.ts'), 'list', 'todo'];
+
+    expect(await run(command, { cwd })).toEqual({
+      stdout: `todo\t001-explicit\t${ticketPath}\n`,
+      stderr: '',
+      exitCode: 0,
+    });
+
+    await writeFile(projectMetadataPath, '---\nTags: [broken\n---\n');
+    const malformed = await run(command, { cwd });
+    expect(malformed.stdout).toBe('');
+    expect(malformed.stderr.length).toBeGreaterThan(0);
+    expect(malformed.exitCode).toBe(2);
+
+    await writeFile(
+      projectMetadataPath,
+      '---\nDefault-Status: Not-Normalized\nGit-Repo: 42\n---\n'
+    );
+    expect(await run(command, { cwd })).toEqual({
+      stdout: '',
+      stderr: 'Git-Repo is not a supported remote\n',
+      exitCode: 2,
+    });
+
+    await rm(projectMetadataPath);
+    const missing = await run(command, { cwd });
+    expect(missing.stdout).toBe('');
+    expect(missing.stderr).toContain(projectMetadataPath);
+    expect(missing.exitCode).toBe(2);
+  });
+
   test('shows, lists, and searches tickets with exact plain and JSON output', async () => {
     const cwd = await mkdtemp(join(temporaryDirectory, 'read-tickets-'));
     const workspace = join(cwd, 'workspace');
@@ -1235,6 +1334,10 @@ describe('read-only commands', () => {
       '---\nAssigned-To: pi\nTags: [task, urgent]\nParent: 001-parent\nBlocked-By: [002-blocker]\n---\n# First\n';
     await mkdir(todoPath, { recursive: true });
     await mkdir(donePath);
+    await writeFile(
+      join(projectPath, 'project.md'),
+      '---\nDefault-Status: todo\n---\n'
+    );
     await writeFile(firstPath, firstSource);
     await writeFile(
       secondPath,
@@ -1256,6 +1359,33 @@ describe('read-only commands', () => {
     });
     expect(await run([...base, 'list', 'todo'], { cwd })).toEqual({
       stdout: `todo\t010-first\t${firstPath}\n`,
+      stderr: '',
+      exitCode: 0,
+    });
+    expect(await run([...base, 'list'], { cwd })).toEqual({
+      stdout: `todo\t010-first\t${firstPath}\n`,
+      stderr: '',
+      exitCode: 0,
+    });
+    expect(await run([...base, 'list', '--json'], { cwd })).toEqual({
+      stdout: `${JSON.stringify(
+        {
+          project: 'alpha-project',
+          tickets: [
+            {
+              name: '010-first',
+              status: 'todo',
+              path: firstPath,
+              assignedTo: 'pi',
+              tags: ['task', 'urgent'],
+              parent: '001-parent',
+              blockedBy: ['002-blocker'],
+            },
+          ],
+        },
+        null,
+        2
+      )}\n`,
       stderr: '',
       exitCode: 0,
     });
@@ -1281,6 +1411,25 @@ describe('read-only commands', () => {
       stderr: '',
       exitCode: 0,
     });
+    await writeFile(
+      join(projectPath, 'project.md'),
+      '---\nDefault-Status: Not-Normalized\n---\n'
+    );
+    expect(await run([...base, 'list', 'todo'], { cwd })).toEqual({
+      stdout: `todo\t010-first\t${firstPath}\n`,
+      stderr: '',
+      exitCode: 0,
+    });
+    expect(await run([...base, 'list'], { cwd })).toEqual({
+      stdout: '',
+      stderr: 'Project Default-Status must be a normalized status name\n',
+      exitCode: 2,
+    });
+    await writeFile(
+      join(projectPath, 'project.md'),
+      '---\nDefault-Status: todo\n---\n'
+    );
+
     expect(
       await run(
         [

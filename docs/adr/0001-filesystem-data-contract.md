@@ -56,7 +56,7 @@ Git-Repo:
 ---
 ```
 
-`Default-Status` is required and names an existing normalized status used when ticket creation does not explicitly select one. `Git-Repo` is an optional Git remote URL. Unknown metadata fields are allowed.
+`Default-Status` is required and names an existing normalized status used when ticket creation or listing does not explicitly select one. `Git-Repo` is an optional Git remote URL. Unknown metadata fields are allowed.
 
 ### Ticket documents
 

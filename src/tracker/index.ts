@@ -7,7 +7,9 @@ import {
   createStatusInProject,
   createTicket,
   createTicketInProject,
+  validateDefaultStatus,
   validateProjectDocument,
+  validateProjectMetadata,
   type CreateTicketInput,
 } from './internal/creation.ts';
 import {
@@ -117,7 +119,10 @@ export type Tracker = {
     statusName: string
   ): Promise<Discovery<Ticket>>;
   readProject(projectName: string): Promise<Outcome<TrackerDocument>>;
-  validateProject(projectName: string): Promise<Outcome<undefined>>;
+  validateProject(
+    projectName: string,
+    options?: { readonly defaultStatus?: boolean }
+  ): Promise<Outcome<undefined>>;
   readTicket(
     projectName: string,
     statusName: string,
@@ -138,7 +143,7 @@ export type Tracker = {
     projectName: string,
     reference: string
   ): Promise<Outcome<ShownTicket>>;
-  listTickets(projectName: string, statusName: string): Promise<QueryResult>;
+  listTickets(projectName: string, statusName?: string): Promise<QueryResult>;
   searchTickets(
     projectName: string,
     criteria?: SearchCriteria
@@ -284,7 +289,7 @@ function createConfiguredTracker(
         'project'
       );
     },
-    validateProject: async (projectName) => {
+    validateProject: async (projectName, options) => {
       if (!isNormalizedName(projectName)) {
         return invalidOutcome(absoluteRoot, 'project', projectName);
       }
@@ -294,6 +299,9 @@ function createConfiguredTracker(
         'project'
       );
       if (!document.ok) return document;
+      if (options?.defaultStatus === false) {
+        return validateProjectMetadata(project, document.value);
+      }
       const validation = await validateProjectDocument(project, document.value);
       return validation.ok ? { ok: true, value: undefined } : validation;
     },
@@ -410,14 +418,33 @@ function createConfiguredTracker(
           invalidDiagnostic(absoluteRoot, 'project', projectName)
         );
       }
-      if (!isNormalizedName(statusName)) {
+      if (statusName !== undefined && !isNormalizedName(statusName)) {
         return failedQuery(
           projectName,
           invalidDiagnostic(absoluteRoot, 'status', statusName)
         );
       }
+
+      let selectedStatus = statusName;
+      if (selectedStatus === undefined) {
+        const project = projectAt(projectName);
+        const document = await readTrackerDocument(
+          join(project.path, 'project.md'),
+          'project'
+        );
+        if (!document.ok) return failedQuery(projectName, document.diagnostic);
+        const defaultStatus = await validateDefaultStatus(
+          project,
+          document.value
+        );
+        if (!defaultStatus.ok) {
+          return failedQuery(projectName, defaultStatus.diagnostic);
+        }
+        selectedStatus = defaultStatus.value;
+      }
+
       const discovery = await discoverTickets(
-        statusAt(projectName, statusName)
+        statusAt(projectName, selectedStatus)
       );
       if (discovery.diagnostics.length > 0) {
         return {

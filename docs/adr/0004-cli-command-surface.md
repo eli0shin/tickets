@@ -56,7 +56,7 @@ tickets show <selector>
 tickets rename <selector> <description>
 tickets move <selector> <status>
 tickets done <selector>
-tickets list <status> [--json]
+tickets list [status] [--json]
 tickets search
   [--status <status>]
   [--tag <tag>...]
@@ -70,7 +70,7 @@ A ticket selector is either a full ticket reference or a positive decimal ticket
 
 The CLI accepts selectors for ticket targets, relationship creation options, and relationship search options. It resolves an ID to the full local or cross-project reference before storing or comparing relationship metadata. Full references retain their existing behavior.
 
-Creation uses the project's `Default-Status` unless `--status` overrides it. Create and rename accept human-readable descriptions and normalize them deterministically to the lowercase kebab-case on-disk description defined by the filesystem contract. They reject descriptions only when normalization cannot produce that on-disk form. Creation writes the standard front matter with supplied metadata and an empty Markdown body.
+Creation and listing use the project's `Default-Status` unless an explicit status overrides it. An explicit listing remains available when the default-status metadata is invalid. Create and rename accept human-readable descriptions and normalize them deterministically to the lowercase kebab-case on-disk description defined by the filesystem contract. They reject descriptions only when normalization cannot produce that on-disk form. Creation writes the standard front matter with supplied metadata and an empty Markdown body.
 
 `show` prints the resolved ticket's absolute path on the first line, followed by the complete ticket file unchanged. There is no editor-launching command.
 

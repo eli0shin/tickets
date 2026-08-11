@@ -64,6 +64,8 @@ line, followed by the complete ticket document. A selector can be a full ticket
 reference or a literal ticket ID such as `064` or `proxmox-config/064`. Literal ID
 selectors work anywhere the CLI accepts a ticket reference. They have no minimum
 length, but they do not ignore padding: `64` does not match `064-description`.
+`tickets list` lists the selected project's default status; pass a status to list
+another lifecycle stage.
 
 ## Embedded Projects
 
