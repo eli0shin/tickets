@@ -487,7 +487,7 @@ function createConfiguredTracker(
       const selectedStatuses = selectSearchStatuses(
         projectAt(projectName),
         statuses.entries,
-        canonicalCriteria.value.statuses
+        canonicalCriteria.value
       );
       if (!selectedStatuses.ok) {
         return failedQuery(projectName, selectedStatuses.diagnostic);
@@ -607,28 +607,39 @@ function failedMutation(diagnostic: DocumentDiagnostic): MutationOutcome {
 function selectSearchStatuses(
   project: Project,
   statuses: readonly Status[],
-  requested: readonly string[] | undefined
+  criteria: SearchCriteria
 ): Outcome<readonly Status[]> {
-  if (requested === undefined) return { ok: true, value: statuses };
-
-  const byName = new Map(statuses.map((status) => [status.name, status]));
-  for (const name of requested) {
-    if (!byName.has(name)) {
-      return {
-        ok: false,
-        diagnostic: {
-          path: join(project.path, name),
-          code: 'status-not-found',
-          message: `Status not found: ${name}`,
-        },
-      };
+  const requested = criteria.statuses;
+  if (requested !== undefined) {
+    const byName = new Map(statuses.map((status) => [status.name, status]));
+    for (const name of requested) {
+      if (!byName.has(name)) {
+        return {
+          ok: false,
+          diagnostic: {
+            path: join(project.path, name),
+            code: 'status-not-found',
+            message: `Status not found: ${name}`,
+          },
+        };
+      }
     }
   }
-  const requestedNames = new Set(requested);
+
+  const requestedNames =
+    requested === undefined ? null : new Set(criteria.statuses);
   return {
     ok: true,
-    value: statuses.filter((status) => requestedNames.has(status.name)),
+    value: statuses.filter(
+      (status) =>
+        (requestedNames === null || requestedNames.has(status.name)) &&
+        (!hasBlockingCriterion(criteria) || status.name !== 'done')
+    ),
   };
+}
+
+function hasBlockingCriterion(criteria: SearchCriteria): boolean {
+  return (criteria.blockedBy?.length ?? 0) > 0 || criteria.unblocked === true;
 }
 
 function validateSearchCriteria(

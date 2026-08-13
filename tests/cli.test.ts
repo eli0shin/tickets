@@ -64,8 +64,9 @@ Options:
   --assigned-to <name>     exactly match every assignee name (default: [])
   --unassigned             match unassigned tickets
   --parent <selector>      match every parent selector (default: [])
-  --blocked-by <selector>  match every blocker selector (default: [])
-  --unblocked              match tickets without blockers
+  --blocked-by <selector>  match non-completed tickets with every blocker
+                           selector (default: [])
+  --unblocked              match non-completed tickets without blockers
   --json                   emit JSON output
   -h, --help               display help for command
 `;
@@ -1498,7 +1499,7 @@ describe('read-only commands', () => {
     expect(
       await run([...base, 'search', '--unassigned', '--unblocked'], { cwd })
     ).toEqual({
-      stdout: `done\t002-second\t${secondPath}\n`,
+      stdout: '',
       stderr: '',
       exitCode: 0,
     });
