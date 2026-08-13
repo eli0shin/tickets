@@ -1,5 +1,11 @@
 # tickets
 
+## 0.6.1
+
+### Patch Changes
+
+- [#37](https://github.com/eli0shin/tickets/pull/37) [`3f4511b`](https://github.com/eli0shin/tickets/commit/3f4511b39dc3faa8fde7032b06e9ec3a995ef103) Thanks [@eli0shin](https://github.com/eli0shin)! - Exclude completed tickets from blocked and unblocked searches.
+
 ## 0.6.0
 
 ### Minor Changes
