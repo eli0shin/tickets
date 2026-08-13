@@ -61,7 +61,7 @@ A ticket currently identified by another ticket as standing in its way. Once it 
 _Avoid_: Dependency
 
 **Blocked ticket**:
-A ticket with at least one current blocker. Blocking is independent of status and is not itself a status.
+A non-completed ticket with at least one current blocker. Blocking is not itself a status.
 
 **Unblocked ticket**:
-A ticket with no current blockers.
+A non-completed ticket with no current blockers. A completed ticket is neither blocked nor unblocked.

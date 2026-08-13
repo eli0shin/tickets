@@ -331,11 +331,11 @@ export function createProgram({
     .option('--parent <selector>', 'match every parent selector', collect, [])
     .option(
       '--blocked-by <selector>',
-      'match every blocker selector',
+      'match non-completed tickets with every blocker selector',
       collect,
       []
     )
-    .option('--unblocked', 'match tickets without blockers')
+    .option('--unblocked', 'match non-completed tickets without blockers')
     .option('--json', 'emit JSON output')
     .action(async (options: SearchOptions) => {
       const validation = validateSearchInput(options);

@@ -531,11 +531,65 @@ describe('tracker read-only queries', () => {
           unblocked: true,
         })
       ).tickets.map((ticket) => ticket.name)
-    ).toEqual(['002-earlier', '003-middle']);
+    ).toEqual(['003-middle']);
     expect(
       (
         await tracker.searchTickets('alpha-project', {
           tags: ['task', 'missing'],
+        })
+      ).tickets
+    ).toEqual([]);
+  });
+
+  test('excludes completed tickets from blocker-state searches', async () => {
+    const workspaceRoot = await temporaryWorkspace();
+    const projectPath = join(workspaceRoot, 'alpha-project');
+    const todoPath = join(projectPath, 'todo');
+    const donePath = join(projectPath, 'done');
+    await mkdir(todoPath, { recursive: true });
+    await mkdir(donePath);
+    await writeFile(
+      join(todoPath, '001-source.md'),
+      '---\nBlocked-By: []\n---\n'
+    );
+    await writeFile(
+      join(todoPath, '002-active-blocked.md'),
+      '---\nBlocked-By: [001-source]\n---\n'
+    );
+    await writeFile(
+      join(donePath, '003-completed-unblocked.md'),
+      '---\nBlocked-By: []\n---\n'
+    );
+    await writeFile(
+      join(donePath, '004-completed-blocked.md'),
+      '---\nBlocked-By: [001-source]\n---\n'
+    );
+    await writeFile(
+      join(donePath, '005-completed-malformed.md'),
+      '---\nBlocked-By: [broken\n---\n'
+    );
+
+    const tracker = createTracker(workspaceRoot);
+    const unblocked = await tracker.searchTickets('alpha-project', {
+      unblocked: true,
+    });
+    expect(unblocked.tickets.map((ticket) => ticket.name)).toEqual([
+      '001-source',
+    ]);
+    expect(unblocked.diagnostics).toEqual([]);
+
+    const blocked = await tracker.searchTickets('alpha-project', {
+      blockedBy: ['001-source'],
+    });
+    expect(blocked.tickets.map((ticket) => ticket.name)).toEqual([
+      '002-active-blocked',
+    ]);
+    expect(blocked.diagnostics).toEqual([]);
+    expect(
+      (
+        await tracker.searchTickets('alpha-project', {
+          statuses: ['done'],
+          unblocked: true,
         })
       ).tickets
     ).toEqual([]);

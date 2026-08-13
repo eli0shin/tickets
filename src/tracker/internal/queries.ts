@@ -157,7 +157,10 @@ function invalidMetadata(
 }
 
 function matches(ticket: TicketSummary, criteria: SearchCriteria): boolean {
+  const hasBlockingCriterion =
+    (criteria.blockedBy?.length ?? 0) > 0 || criteria.unblocked === true;
   return (
+    (!hasBlockingCriterion || ticket.status !== 'done') &&
     matchesOne(criteria.statuses, ticket.status) &&
     containsAll(ticket.tags, criteria.tags) &&
     allEqual(criteria.assignedTo, ticket.assignedTo) &&
