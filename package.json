@@ -1,6 +1,6 @@
 {
   "name": "tickets",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "A local filesystem ticket tracker",
   "type": "module",
   "private": true,
