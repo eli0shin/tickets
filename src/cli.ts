@@ -75,6 +75,8 @@ import type { ConfirmOverwrite } from './skill.ts';
 import type { CommandOutcome, UpdateBehavior } from './types.ts';
 import { getTicketsExecutablePath } from './update.ts';
 import { runUpdaterWorker } from './updater-worker.ts';
+import { startUiServer } from './ui/index.ts';
+import { openBrowser } from './ui/browser.ts';
 
 type GlobalOptions = {
   readonly workspace?: string;
@@ -443,6 +445,52 @@ export function createProgram({
           reference
         )
       );
+    });
+
+  program
+    .command('ui')
+    .description('open the local ticket board in your browser')
+    .option(
+      '--port <port>',
+      'localhost port (0 chooses an available port)',
+      '0'
+    )
+    .option('--no-open', 'start the server without opening a browser')
+    .action(async ({ port, open }) => {
+      if (!/^\d+$/.test(port) || Number(port) > 65535) {
+        return writeCommandFailure({
+          kind: 'message',
+          message: 'Port must be an integer between 0 and 65535',
+        });
+      }
+      const globals = program.opts();
+      const result = await startUiServer({
+        workspaceRoot: workspaceRootFor(globals.workspace),
+        cwd,
+        includeEmbedded:
+          globals.workspace === undefined && globals.project === undefined,
+        project: globals.project,
+        port: Number(port),
+      });
+      if (!result.ok)
+        return writeCommandFailure({
+          kind: 'diagnostic',
+          diagnostic: result.diagnostic,
+        });
+      const server = result.value;
+      const stop = () => {
+        server.stop(true);
+        process.off('SIGINT', stop);
+        process.off('SIGTERM', stop);
+      };
+      process.on('SIGINT', stop);
+      process.on('SIGTERM', stop);
+      const url = server.url.href;
+      writeStdout(`${url}\n`);
+      if (open)
+        void openBrowser(url).catch(() => {
+          writeStderr(`Could not open a browser. Open ${url} manually.\n`);
+        });
     });
 
   program

@@ -24,6 +24,7 @@ Run `tickets --help` for the complete command grammar.
 | `tickets project ...`                                                | Create and list Workspace Projects          |
 | `tickets status ...`                                                 | Create and list statuses                    |
 | `tickets create`, `show`, `list`, `search`, `rename`, `move`, `done` | Manage tickets                              |
+| `tickets ui`                                                         | Open the local browser board                |
 | `tickets lint`                                                       | Validate the selected project               |
 | `tickets skill install`                                              | Install the bundled agent skill             |
 | `tickets update`                                                     | Update Tickets to the latest native release |
@@ -42,6 +43,31 @@ Tickets also checks for updates in a detached background worker. By default it s
 ```
 
 `updateBehavior` can be `auto` (silently install), `notify` (print an availability message after commands), or `off` (disable checks). The interval defaults to 24 hours. Update check state is stored in `$XDG_STATE_HOME/tickets-update-state` when set, otherwise `~/.tickets-update-state`.
+
+## Browser board
+
+Run `tickets ui` to start a loopback-only server and open your default browser.
+Press Ctrl+C to stop it. Use `tickets ui --no-open` to open the printed URL yourself,
+or `tickets ui --port 4178` to choose a port (the default picks a free port).
+
+The dark Kanban board reads the same files as the CLI. It shows a column for every
+status directory; click a card for its complete Markdown body and metadata. Titles
+use the first Markdown H1, falling back to the ticket filename's description.
+The board refreshes from disk every few seconds while the tab is visible.
+
+**Unblocked** is enabled initially. Turn it off to show all tickets, or select a
+**Blocked by** reference. These filters use `tickets search` semantics, including
+literal IDs, cross-project blockers, and excluding `done` from dependency queries.
+Tags and text search can narrow the results further. Assignees appear on cards,
+not as filters.
+
+The project picker always includes global Workspace Projects. When launched inside
+an Embedded Project, it also includes the nearest ancestor `.tickets/` and selects
+it initially. Otherwise a Git-origin match selects the initial global project, or
+the first global project is used. `--workspace` and `--project` override automatic
+selection as with other commands. Embedded projects elsewhere are not scanned.
+
+The initial UI supports viewing only; use the CLI or an editor to change tickets.
 
 ## Ticket descriptions
 
