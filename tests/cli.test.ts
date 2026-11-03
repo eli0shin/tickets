@@ -47,6 +47,7 @@ Commands:
                                    references
   move <selector> <status>         move a ticket to another status
   done <selector>                  complete a ticket
+  ui [options]                     open the local ticket board in your browser
   update                           update Tickets CLI to latest version
   skill                            manage agent skills
   lint [options]                   validate the selected project

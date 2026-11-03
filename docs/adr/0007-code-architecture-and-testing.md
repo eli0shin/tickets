@@ -4,7 +4,7 @@ status: accepted
 
 # Build a private deep tracker module and test through real filesystems
 
-Tickets supports two product interfaces: the filesystem and the CLI. It does not expose a supported TypeScript library interface. Internally, a deep tracker module concentrates the filesystem contract behind one interface used by commands and tests.
+Tickets supports the filesystem, CLI, and a local browser dashboard as product interfaces. It does not expose a supported TypeScript library or HTTP API interface. Internally, a deep tracker module concentrates the filesystem contract behind one interface used by commands and tests.
 
 ## Module structure
 
@@ -12,6 +12,7 @@ Tickets supports two product interfaces: the filesystem and the CLI. It does not
 src/
 ├── cli.ts                    # Commander grammar, dependency composition, top-level failure handling
 ├── commands/                 # One orchestration module per command family/operation
+├── ui/                       # Local HTTP boundary, dashboard reads, browser launch, safe Markdown
 ├── tracker/
 │   ├── index.ts              # The tracker module's sole internal interface
 │   └── internal/             # Parsing, scanning, canonical writes, references, and lint implementation
@@ -20,6 +21,7 @@ src/
 ├── output.ts                 # All stdout/stderr, plain text, JSON, and exit-code rendering
 └── types.ts                  # Shared private domain values and structured outcomes
 assets/
+├── ui/                       # Embedded dark browser board: HTML text, CSS, JavaScript
 └── tickets/
     └── SKILL.md              # Single source for the bundled skill
 ```
@@ -40,6 +42,22 @@ The tracker directory may split its implementation into private files for locali
 Git project discovery and skill installation remain separate because they operate at different seams. Git tests use real repositories; skill installation injects only terminal confirmation so interactive and non-interactive behavior can be deterministic.
 
 Command modules translate parsed Commander inputs into tracker operations. They do not parse documents or render output. The CLI entry point composes workspace/project discovery, commands, and output.
+
+## Browser dashboard
+
+`tickets ui` starts a loopback-only server with bundled static assets. Its private
+HTTP endpoints compose tracker reads rather than introduce a second datastore or
+metadata parser. Project discovery includes the active Embedded Project and all
+Workspace Projects; explicit CLI selection keeps its existing precedence. Distinct
+source-qualified keys disambiguate identically named Embedded and Workspace
+Projects without exposing arbitrary filesystem reads.
+
+Dependency filters delegate to tracker search so completion and cross-project
+selector semantics remain consistent with the CLI. The browser polls for changes;
+no index or project registry is persisted. The first version supports viewing;
+future editing is an open product decision, not an architectural prohibition.
+Markdown is rendered as generated markup without raw HTML or remote images, and
+HTTP responses reject foreign hosts/origins and prohibit framing and inline scripts.
 
 ## Outcomes and output
 
@@ -64,6 +82,15 @@ The suite covers every accepted contract branch, including:
 - local and cross-project references, rename rewrites, move/completion cleanup, idempotence, and visible partial failure;
 - list/search criteria, ordering, partial scans, lint findings, and stable diagnostic codes;
 - required project metadata and default-status behavior.
+
+### Browser integration tests
+
+Run the local server against fresh temporary filesystems and exercise its HTTP
+boundary, discovery, dependency filters, diagnostics, Markdown safety, and
+read-only request handling. Compile the executable and start it outside the
+repository to verify every browser asset is embedded. CLI smoke tests verify URL
+output, browser launch, and signal-driven shutdown. Browser interaction checks
+cover the actual controls and responsive layout.
 
 ### Git integration tests
 

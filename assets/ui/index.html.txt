@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <title>Tickets</title>
+    <link rel="stylesheet" href="/style.css">
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="logo" href="/" aria-label="Tickets home"><span class="mark">t</span>tickets</a>
+      <span class="divider" aria-hidden="true"></span>
+      <select id="project" aria-label="Project"></select>
+    </header>
+    <main>
+      <section class="project-heading">
+        <h1 id="project-name">Tickets</h1>
+        <p id="project-path"></p>
+      </section>
+      <form id="filters" class="toolbar" role="search" aria-label="Filter tickets">
+        <input id="query" type="search" placeholder="Search tickets…" aria-label="Search tickets" autocomplete="off">
+        <button id="unblocked" type="button" aria-pressed="true">Unblocked</button>
+        <select id="tag" aria-label="Tag"><option value="">All tags</option></select>
+        <select id="blocked-by" aria-label="Blocked by"><option value="">Blocked by…</option></select>
+        <button id="clear" type="button" hidden>Clear filters</button>
+      </form>
+      <p id="error" role="alert" hidden></p>
+      <details id="diagnostics" hidden><summary>Some files could not be read</summary><ul></ul></details>
+      <div id="board" class="board" aria-label="Ticket board"></div>
+      <p id="empty" hidden>No projects yet. Create one with <code>tickets project create &lt;name&gt;</code> or <code>tickets init</code>.</p>
+    </main>
+    <dialog id="ticket" aria-labelledby="detail-title">
+      <div class="modal-bar"><span id="detail-reference"></span><button id="close-ticket" type="button" aria-label="Close ticket">×</button></div>
+      <article id="detail"></article>
+    </dialog>
+  </body>
+</html>
