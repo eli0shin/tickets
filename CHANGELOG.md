@@ -1,5 +1,11 @@
 # tickets
 
+## 0.7.0
+
+### Minor Changes
+
+- [#39](https://github.com/eli0shin/tickets/pull/39) [`089ce43`](https://github.com/eli0shin/tickets/commit/089ce438b76774a1a129d0d5cf959ebd5c408b8d) Thanks [@eli0shin](https://github.com/eli0shin)! - Add `tickets ui`, a dark local browser board backed by the existing filesystem tracker. View global and current embedded projects, open full ticket details, and filter by tags, Unblocked, or Blocked by without leaving the browser.
+
 ## 0.6.1
 
 ### Patch Changes
